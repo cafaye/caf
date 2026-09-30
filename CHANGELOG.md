@@ -8,6 +8,27 @@ All notable changes to caf are recorded here. The format follows
 
 ### Added
 
+- CI, on `.github/workflows/ci.yml`. The toolchain half is kit's shared
+  workflow, called rather than copied
+  (`cafaye/kit/.github/workflows/ci.reusable.yml@master`, `language: go`), so a
+  fix in kit reaches this repository without a per-repo pull request. Go is
+  pinned to 1.25 — the minor `go.mod` and `mise.toml` both declare, never
+  `stable` or `latest` — and the coverage gate is set to 85% against a measured
+  89.1%, because kit's default of 0 is the one value that cannot fail.
+  Two companion jobs carry what kit cannot know: `gate` runs `bin/prime`
+  unmodified and then fails if the gate moved `go.mod` or `go.sum`, and
+  `root-gated` asserts that the suite's one environment-gated test actually
+  **passed** rather than skipped. **`caf` is the tool the rest of the fleet's
+  CI shells out to** — `caf contract lint` is what prints the `OK …` lines
+  pantry's gate ends on — so a red build here is a red build in every
+  repository whose contract check runs.
+- `internal/ci`, a package with no code and one test: it reads
+  `.github/workflows/ci.yml` and fails when the `uses:` path stops resolving,
+  when the toolchain pin drifts from `go.mod`, when the coverage threshold
+  returns to 0, or when the job that runs `bin/prime` stops guarding the
+  lockfiles. A caller of a shared workflow is code, and code that nobody
+  executes is code nobody has tested.
+
 - `caf dev [project]` — reads a project's `cafaye.yml`, validates it with the
   same rules `caf contract lint` applies, renders a compose file from it,
   **writes that file and prints it in full**, brings the stack up, waits for

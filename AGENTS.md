@@ -164,6 +164,28 @@ Three rules follow from that transport, and they are not stylistic:
 - **Synchronising is a read with a deadline, never a sleep.** The harness
   distinguishes *the process exited* from *the process is up and said nothing*,
   because a harness that conflates them turns every crash into a flake.
+- **A deadline is not a substitute for an event.** These two look alike and only
+  one of them is legitimate, so the rule is: *a deadline is right when the
+  absence of the event is the assertion, and wrong when the event could simply be
+  waited for.* "The server is up and said nothing" is a deadline, because silence
+  has no signal and the only way to observe it is to let time pass. "The server
+  has exited" is not — the process exiting is a fact you can block on
+  (`cmd.Wait()`, a closed pipe, a closed channel), and handing `nextFrame` a
+  250ms budget instead makes the assertion about the machine's scheduler. It was
+  measured to fail **12 of 12 runs** on a loaded machine while the harness
+  behaved correctly throughout: the cold first spawn of the binary was observed
+  exiting in **476ms** against a median of 13ms. Raising 250ms to 1000ms would
+  not have fixed the shape, only made the head rarer. When a deadline *is* the
+  right tool it stays a backstop — it fails loudly and names the event that never
+  arrived, and nothing depends on it elapsing.
+- **Readiness is the protocol, not a connect.** `internal/ryuk`'s live test used
+  to gate on a TCP connect to the reaper's published port. A published port is
+  not readiness: Docker's port-forward proxy accepts before anything is
+  listening inside the container, so the connect succeeded and the handshake then
+  read EOF — measured, a **16ms** window and 3 failures in 18 runs. The gate is
+  now the acknowledgement itself, retried as a whole `Dial`, because that is the
+  only thing about a reaper that says it is a reaper. Same defect class, same
+  fix: wait for the event.
 
 **A tool never returns a credential.** A registry entry's `environment` is a
 service's own configuration. The tools report variable names and the compose

@@ -8,6 +8,37 @@ All notable changes to caf are recorded here. The format follows
 
 ### Added
 
+- `caf dev [project]` — reads a project's `cafaye.yml`, validates it with the
+  same rules `caf contract lint` applies, renders a compose file from it,
+  **writes that file and prints it in full**, brings the stack up, waits for
+  health, and reports what came up and what did not. The document is printed
+  because it is the only copy of what caf decided: a command that generates
+  something nobody can inspect is a command nobody can debug.
+- `internal/dev`, the one place that knows what a local stack is. `Plan` is
+  pure — a manifest and a registry in, a rendered compose document and a start
+  order out — so every interesting behaviour of `caf dev` is covered by tests
+  that start no container at all. The two things that do touch the world sit
+  behind interfaces there: `Registry` (how a service is run locally, which
+  pantry owns) and `Runtime` (the container runtime, three calls wide).
+- The service registry seam `caf dev` and `caf deploy` will share. One JSON
+  object keyed by service name, and the same document whether it is read from a
+  file or served over HTTP, so a pantry response and a hand-written catalog are
+  the same bytes. **caf ships no catalog**: an image reference guessed by a CLI
+  is a reference that pulls the wrong thing, so a project that declares
+  dependencies is told which one it needs and how to supply it.
+- `internal/contract.Manifest`: `Language()`, `Description()` and
+  `Dependencies()`, and `CheckData`, so a caller that already holds a manifest
+  does not read and re-implement the rules to get an answer. A command that
+  validated with its own copy would accept a manifest `caf contract lint`
+  rejects, which is the one divergence a single CLI cannot have.
+- A second table in `caf doctor`: whether this machine can run *this* project.
+  The tool table cannot answer it — a Ruby project on a machine with no Ruby
+  reports every tool it needs, and a container runtime that is installed and not
+  answering is invisible from `PATH`. So `doctor` now also checks the runtime
+  server, the machine's memory and CPUs, the ports the plan publishes, and the
+  toolchain for the language in the manifest. The ports come from the same plan
+  `caf dev` would build, so the two cannot drift. `-tools-only` prints the
+  original table alone; `doctor` still always exits 0.
 - `caf contract lint <path>` — validates every `cafaye.yml` under a file or a
   directory against the manifest schema owned by cafaye/core, plus the three
   cross-field rules a JSON Schema cannot state. One line per manifest, in
@@ -42,8 +73,44 @@ All notable changes to caf are recorded here. The format follows
   invalid) plus four written for caf, each of which the JSON Schema accepts so
   that only a caf rule can reject it.
 
+### Fixed
+
+- Three bugs a real `caf dev` run found that the tests with fakes had not. The
+  teardown was armed after `up`, so an interrupt during the bring-up skipped it
+  entirely — exactly when the daemon has already made networks and containers.
+  It is armed before `up` now, and it checks what is left and repeats itself
+  while something is left, because an interrupt kills the `docker compose up`
+  client while the daemon keeps working: a single `down` removed the network and
+  missed the containers. Measured against real Docker, the first pass left two
+  containers behind and the loop leaves none. `ps` was passed `-f ""`, which the
+  runtime reads as the working directory, so a stack that was up and healthy was
+  reported as four absent services. And `caf doctor` had no way to see the
+  catalog `caf dev` uses, so a project with dependencies reported "nothing to
+  run" on a machine that runs it fine; it takes `-registry` now.
+- The wait loop measured its deadline on the wall clock while its sleep was
+  injected, so the test that exercises the timeout took as long as the timeout it
+  was testing — sixty seconds to prove a second. Both the clock and the sleep
+  are seams now, and so is the teardown's.
+
 ### Changed
 
+- `caf dev` takes an **optional** project directory (`.` by default) instead of
+  a required one, and `-service` and `-no-tui` are gone: `-no-tui` described a
+  TUI this packet deliberately did not add, and `-service` duplicated what the
+  manifest already declares. Nothing released used either. The flags are `-out`,
+  `-dry-run`, `-no-infra`, `-port`, `-registry` and `-wait`.
+- `caf doctor` takes an optional project directory and a `-registry`, and two
+  project paths is a usage error.
+- `cafaye.yml` is core's 0.2 shape. It was still the pre-0.2 draft — declaring
+  `languages`, `contracts` and `dev`, and none of core's required fields — so
+  `caf contract lint .` failed on this repository's own manifest. It is green
+  now.
+- `internal/cli/stub_test.go`: `dev` moved out of `stubCommands` into
+  `workingCommands`.
+- `AGENTS.md` records the two seams in `internal/dev`, the one pure function and
+  the thin wiring around it, and amends the no-subprocess rule for `doctor`'s
+  environment section, which cannot answer its question without asking the
+  container runtime whether it is running.
 - `caf contract` is now a group of subcommands, `caf contract lint` and `caf
   contract resolve`, and bare `caf contract` prints them. The placeholder flags
   it carried as a stub (`-service`, `-format`, `-out`) are gone: they described

@@ -146,12 +146,23 @@ func lintFile(path string) (Finding, error) {
 	if err != nil {
 		return Finding{}, err
 	}
+	_, finding := CheckData(path, data)
+	return finding, nil
+}
+
+// CheckData validates manifest bytes and hands back both answers: the manifest,
+// for the tools that go on to use it, and the Finding, from the same rules Lint
+// applies. A caller that already holds the bytes — `caf dev` reading a project
+// root — must not read and re-implement the rules to get them: a command that
+// checked with its own copy would accept a manifest `caf contract lint`
+// rejects, which is the one divergence a CLI cannot have.
+func CheckData(path string, data []byte) (Manifest, Finding) {
 	manifest, err := Parse(data)
 	if err != nil {
-		return Finding{Path: path, Violations: []Violation{{
+		return Manifest{}, Finding{Path: path, Violations: []Violation{{
 			Keyword: RuleParse,
 			Message: err.Error(),
-		}}}, nil
+		}}}
 	}
-	return Finding{Path: path, Violations: manifest.Check()}, nil
+	return manifest, Finding{Path: path, Violations: manifest.Check()}
 }

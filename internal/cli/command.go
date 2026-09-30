@@ -68,7 +68,7 @@ func Commands() []*Command {
 	return []*Command{
 		newContractCommand(),
 		newDeployCommand(),
-		newDevCommand(),
+		newDevCommand(defaultDevDeps()),
 		newDoctorCommand(),
 		newGenCommand(),
 		newInitCommand(),

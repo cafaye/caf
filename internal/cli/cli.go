@@ -8,6 +8,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -38,6 +39,9 @@ type Options struct {
 	// discarded, so a caller that only wants an exit code can pass nothing.
 	Stdout io.Writer
 	Stderr io.Writer
+	// Context is cancelled when the process is interrupted. A nil context is a
+	// background one, so a caller that only wants an exit code passes nothing.
+	Context context.Context
 }
 
 // Env is what a command is handed when it runs: the build identity and the two
@@ -47,6 +51,12 @@ type Env struct {
 	Version Version
 	Stdout  io.Writer
 	Stderr  io.Writer
+	// Context is cancelled when the process is interrupted. It is optional: a
+	// caller that only wants an exit code passes nothing, and the router fills
+	// in a background context. `caf dev` is the one command that reads it, and
+	// it is there rather than read from a package-level variable so a test can
+	// cancel it without sending itself a signal.
+	Context context.Context
 }
 
 // Run executes one invocation and returns the process exit code:
@@ -91,10 +101,15 @@ func (o Options) env() Env {
 	if version.Commit == "" {
 		version.Commit = unknownCommit
 	}
+	ctx := o.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return Env{
 		Version: version,
 		Stdout:  writerOrDiscard(o.Stdout),
 		Stderr:  writerOrDiscard(o.Stderr),
+		Context: ctx,
 	}
 }
 

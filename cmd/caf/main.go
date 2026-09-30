@@ -7,7 +7,10 @@
 package main
 
 import (
+	"context"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/cafaye/caf/internal/cli"
 )
@@ -24,10 +27,23 @@ var (
 )
 
 func main() {
+	// This is the one place the signals are read, because it is the one place
+	// that has a process. `caf dev` is the command that cares: it cancels on
+	// this to stop waiting and put the stack it started back down, and a run
+	// whose teardown can never fire is a run that leaves four containers
+	// behind.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// The handler is released before exiting so a signal arriving during a
+	// command's own teardown does not interfere with it. `caf dev` runs its
+	// teardown on a context it makes itself, so this is belt and braces rather
+	// than the mechanism.
+	defer stop()
+
 	os.Exit(cli.Run(cli.Options{
 		Version: cli.Version{Semver: version, Commit: commit},
 		Args:    os.Args[1:],
 		Stdout:  os.Stdout,
 		Stderr:  os.Stderr,
+		Context: ctx,
 	}))
 }

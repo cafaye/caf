@@ -25,13 +25,14 @@ type Manifest struct {
 // smaller than the schema: every field here exists because a rule or a
 // consumer needs it, and a field nobody reads is a field nobody validates.
 type manifestFields struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Language    string   `json:"language"`
-	Core        string   `json:"core"`
-	Exposes     *exposes `json:"exposes"`
-	Consumes    []string `json:"consumes"`
-	Repository  struct {
+	Name         string       `json:"name"`
+	Description  string       `json:"description"`
+	Language     string       `json:"language"`
+	Core         string       `json:"core"`
+	Exposes      *exposes     `json:"exposes"`
+	Consumes     []string     `json:"consumes"`
+	Dependencies []dependency `json:"dependencies"`
+	Repository   struct {
 		URL           string `json:"url"`
 		DefaultBranch string `json:"defaultBranch"`
 		Visibility    string `json:"visibility"`
@@ -49,6 +50,35 @@ type manifestFields struct {
 type exposes struct {
 	APIDocument string   `json:"api"`
 	Events      []string `json:"events"`
+}
+
+// dependency is the decoded form of one entry in `dependencies`.
+type dependency struct {
+	Name     string `json:"name"`
+	Version  string `json:"version"`
+	Required *bool  `json:"required"`
+}
+
+// Dependency is one other cafaye service this service builds on, as a consumer
+// reads it: a name, a constraint on that dependency's own contract version,
+// and whether the service runs without it.
+//
+// Required is a bool rather than a pointer because the schema documents a
+// default of true, and a JSON Schema default is an annotation that no validator
+// applies. Absent and false are therefore different bytes that mean the same
+// thing, and the accessor collapses them here so no consumer has to.
+type Dependency struct {
+	Name     string
+	Version  string
+	Required bool
+}
+
+func (d Dependency) String() string {
+	requirement := "optional"
+	if d.Required {
+		requirement = "required"
+	}
+	return d.Name + " " + d.Version + " (" + requirement + ")"
 }
 
 // Parse reads a manifest. A syntax error is returned; anything else is a
@@ -91,6 +121,35 @@ func (m Manifest) Publishes() []string {
 
 // Consumes is the event types this service subscribes to.
 func (m Manifest) Consumes() []string { return m.fields.Consumes }
+
+// Language is the implementation language, or "spec" for a repository that
+// only holds specifications. It is the first thing `caf dev` and `caf doctor`
+// read: it decides the container port, the toolchain a developer needs, and
+// whether the service is a library at all.
+func (m Manifest) Language() string { return m.fields.Language }
+
+// Description is the manifest's one-line summary, which the local stack carries
+// as the compose project description.
+func (m Manifest) Description() string { return m.fields.Description }
+
+// Dependencies are the other cafaye services this one builds on, in the order
+// the manifest declares them. `caf dev` turns them into a running stack, so
+// this is the list the local closure is walked from.
+func (m Manifest) Dependencies() []Dependency {
+	declared := m.fields.Dependencies
+	if len(declared) == 0 {
+		return nil
+	}
+	deps := make([]Dependency, 0, len(declared))
+	for _, dep := range declared {
+		deps = append(deps, Dependency{
+			Name:     dep.Name,
+			Version:  dep.Version,
+			Required: dep.Required == nil || *dep.Required,
+		})
+	}
+	return deps
+}
 
 // ServesHTTP reports whether the manifest points at an OpenAPI document.
 func (m Manifest) ServesHTTP() bool {

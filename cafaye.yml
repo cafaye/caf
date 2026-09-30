@@ -1,27 +1,36 @@
 # cafaye.yml — the cafaye project manifest.
 #
-# DRAFT. The schema is owned by cafaye/core, not by this repository. This file
-# records the shape caf is being built against; when core freezes the manifest
-# spec, this file is replaced by `caf init`, which generates it from the schema
-# and validates it. Do not add fields here that core does not define.
-
-version: 1
-
+# The schema is owned by cafaye/core, not by this repository: this file is
+# validated against the copy vendored at internal/contract/schemas. Do not add
+# fields here that core does not define — `additionalProperties: false` means a
+# field core has not declared is an error, and `caf contract lint` reports it.
+#
+# Checked with:
+#
+#   go run ./cmd/caf contract lint .
 name: caf
-description: The cafaye platform CLI.
+description: The cafaye platform CLI. One binary, one manifest, one set of contracts.
 
-# The languages in this project, and the toolchain each one is built with. caf
-# itself is the Go tool; the other services in the platform are declared the
-# same way.
-languages:
-  - name: go
-    version: "1.25"
+# The language decides the container port caf publishes and the toolchain
+# `caf doctor` checks for: both are read from this field rather than from a list
+# written beside the command, so the image and the port cannot disagree.
+language: go
 
-# The contract packages this project owns. Empty for now: contracts land with
-# cafaye/core, and `caf contract` reads them from there.
-contracts: []
+# The version of the core contract this was written against. `caf contract
+# resolve` answers whether a given core version is inside it, and service CI
+# pins core to a release that is.
+core: ^0.2.0
 
-# Local development stack. `caf dev` reads this to decide what to run; the
-# values are defaults only, and every one is overridable by a flag.
-dev:
-  services: []
+# caf is a binary, not a service: it exposes no HTTP surface and publishes no
+# events, so `exposes` is omitted entirely. A repository that declares a
+# contract surface must declare a real one, and this one has none.
+dependencies: []
+
+repository:
+  url: git@github.com:cafaye/caf.git
+  defaultBranch: master
+  visibility: public
+
+owner:
+  team: caf
+  contact: caf@cafaye.com

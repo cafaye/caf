@@ -216,14 +216,37 @@ func TestDoctorSummary(t *testing.T) {
 	}
 }
 
-func TestDoctorTakesNoArguments(t *testing.T) {
-	code, _, stderr := runCLI(t, testVersion, "doctor", "extra")
-
-	if code != 2 {
-		t.Fatalf("exit code = %d, want 2 (stderr: %s)", code, stderr)
+// doctor takes an optional project directory: `caf doctor` alone checks this
+// one, `caf doctor ../billing` checks that one. Two paths is a usage error —
+// there is one project per report.
+func TestDoctorArgumentCount(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		wantCode int
+		wantErr  string
+	}{
+		{name: "no argument means this directory", args: nil, wantCode: exitSuccess},
+		{name: "one project directory", args: []string{"."}, wantCode: exitSuccess},
+		{
+			name:     "two directories is a usage error",
+			args:     []string{".", ".."},
+			wantCode: exitUsage,
+			wantErr:  "wants at most 1 argument",
+		},
 	}
-	if !strings.Contains(stderr, "wants 0 arguments") {
-		t.Errorf("stderr missing the usage error\ngot:\n%s", stderr)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, _, stderr := runCLI(t, testVersion, append([]string{"doctor"}, tt.args...)...)
+
+			if code != tt.wantCode {
+				t.Fatalf("exit code = %d, want %d (stderr: %s)", code, tt.wantCode, stderr)
+			}
+			if tt.wantErr != "" && !strings.Contains(stderr, tt.wantErr) {
+				t.Errorf("stderr missing %q\ngot:\n%s", tt.wantErr, stderr)
+			}
+		})
 	}
 }
 
@@ -236,22 +259,42 @@ func findRow(report doctorReport, name string) (doctorRow, bool) {
 	return doctorRow{}, false
 }
 
-// parseDoctorRows reads a printed report back as name -> status. The status
-// token is the anchor so multi-word names such as "docker compose" survive.
+// doctorStatuses is every status word a doctor row can carry. The tool table
+// uses two of them and the project section uses the rest, and they are pinned
+// because a script greps for them and a report whose vocabulary drifts is a
+// report nobody can read in a CI log.
+var doctorStatuses = []string{
+	"unreachable", "too little", "too few", "in use", "unknown",
+	"ok", "missing", "free",
+}
+
+// parseDoctorRows reads a printed report back as name -> status. The status is
+// the anchor, matched as a whole phrase between spaces, so a multi-word name
+// such as "docker compose", a multi-word status such as "too little", and a row
+// whose name starts with a status word — "toolchain go" — all survive.
 func parseDoctorRows(out string) map[string]string {
 	rows := map[string]string{}
 	for _, line := range strings.Split(out, "\n") {
-		if strings.HasPrefix(line, "tool") || strings.HasPrefix(line, "checked") {
+		name, status, found := cutStatus(line)
+		if !found {
 			continue
 		}
-		for _, status := range []string{"ok", "missing"} {
-			if i := strings.Index(line, " "+status+" "); i > 0 {
-				rows[strings.TrimSpace(line[:i])] = status
-				break
-			}
-		}
+		rows[name] = status
 	}
 	return rows
+}
+
+// cutStatus splits a row into its name and its status. Longest status first, so
+// "too little" is not found as the tail of a longer phrase.
+func cutStatus(line string) (string, string, bool) {
+	for _, status := range doctorStatuses {
+		at := strings.Index(line, " "+status+" ")
+		if at <= 0 {
+			continue
+		}
+		return strings.TrimSpace(line[:at]), status, true
+	}
+	return "", "", false
 }
 
 func fakeLookPath(found ...string) func(string) (string, error) {

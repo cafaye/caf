@@ -63,7 +63,7 @@ func TestAClosedLeaseReapsAndAnOpenOneDoesNot(t *testing.T) {
 	// 2 and 3, before anything is started. The session id is generated per run, so
 	// the label cannot have been used by a previous run of this test.
 	session := liveSessionID()
-	filter := Filter{Labels: []Label{SessionLabel(session)}, RetryOffset: SettleOffset}
+	filter := Filter{Labels: []Label{SessionLabel(session)}}
 
 	lines, err := filter.Lines()
 	if err != nil {
@@ -104,12 +104,16 @@ func TestAClosedLeaseReapsAndAnOpenOneDoesNot(t *testing.T) {
 	reaper := "caf06-ryuk"
 	docker.remove(ctx, reaper)
 	defer docker.remove(ctx, reaper)
+	// Only the variables moby-ryuk actually reads. An earlier version of this
+	// also passed a retry-offset variable, which the reaper ignores entirely: it
+	// reads four environment variables and that is not one of them. Passing it
+	// made this demonstration look like it was proving a settle window that does
+	// not exist.
 	if out, err := docker.run(ctx, "run", "-d", "--name", reaper,
 		"-v", "/var/run/docker.sock:/var/run/docker.sock",
 		"-p", fmt.Sprintf("127.0.0.1:%d:8080", reaperPort),
 		"--env", "RYUK_RECONNECTION_TIMEOUT=10s",
 		"--env", "RYUK_CONNECTION_TIMEOUT=10s",
-		"--env", "RYUK_RETRY_OFFSET=-1s",
 		"testcontainers/ryuk:0.8.1"); err != nil {
 		t.Fatalf("the reaper: %v\n%s", err, out)
 	}

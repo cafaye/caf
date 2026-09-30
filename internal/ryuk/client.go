@@ -27,17 +27,36 @@ import (
 // "hold this socket open for as long as the resources are wanted", and there is
 // no token, no renewal and no heartbeat to get wrong.
 //
-// # Two defences, because one is not enough
+// # One structural defence, and one claim that was not true
 //
 // Session-scoped labels: a filter can only name a label, so a sweeper
 // structurally cannot name another worker's resource — there is no shape of the
-// filter that says "remove everything a human ever started".
+// filter that says "remove everything a human ever started". That defence is
+// real, and it is the load-bearing one.
 //
-// A settle window: `RYUK_RETRY_OFFSET` below zero makes the reaper skip
-// anything created after the sweep began and re-sweep, so a resource that comes
-// up while a prune is in flight is not mistaken for an abandoned one. That is
-// the answer to "how do you stop a sweeper killing a running worker": you do not
-// distinguish them by liveness, you make the sweep monotonic.
+// caf's reaper is a **liveness guess**, not a monotonic sweep, and this package
+// says so here rather than implying otherwise. It used to imply otherwise: it
+// carried a settle-window field, documented as making the sweep skip anything
+// created after the pass began and sweep again, and read in zero places. Three
+// measurements against `moby-ryuk` settled what that field was worth:
+//
+//   - the reaper reads four environment variables — connection timeout, port,
+//     reconnection timeout and verbosity. A retry offset is not one of them, at
+//     tag 0.8.1 or on main, so there was never a knob to turn;
+//   - it calls its prune exactly once, from main, and then exits. There is no
+//     second pass for a settle window to re-enter;
+//   - and it cannot express a created-at constraint regardless. A filter line is
+//     url.ParseQuery'd and every key becomes a Docker filter, but the daemon
+//     validates container-list filters against a fixed set with no created-at
+//     term in it, and an unknown key is a hard error rather than a no-op — so
+//     smuggling one in would fail every prune call and the reaper would silently
+//     remove nothing at all.
+//
+// What actually protects a running worker is the lease: the reaper counts its
+// clients, and while this package holds the socket open it prunes nothing. What
+// is *not* protected is a resource created after a prune pass has begun, by
+// anything, in a window a client cannot close. That gap is real, it is narrow,
+// and it is the honest answer rather than a fictional defence.
 //
 // # The empty filter is the whole risk
 //
@@ -101,15 +120,13 @@ func SessionLabel(session string) Label {
 	return Label{Key: LabelBase + ".caf.session", Value: session}
 }
 
-// Filter is what a lease matches. It is a set of labels and a settle window, and
-// nothing else — there is deliberately no way to express "everything".
+// Filter is what a lease matches. It is a set of labels and nothing else —
+// there is deliberately no way to express "everything", and there is equally no
+// way to express "created before", because the reaper has no filter for it. That
+// absence is a limitation of the protocol rather than a gap in this type, and
+// pretending otherwise here is what a field nobody reads looks like.
 type Filter struct {
 	Labels []Label
-	// RetryOffset is the settle window, added to the start time of the prune
-	// pass. A negative value means "skip anything created after the sweep
-	// began, and sweep again", which is what makes the sweep monotonic instead
-	// of a liveness guess.
-	RetryOffset time.Duration
 }
 
 // Lines is what goes on the wire: one line for the whole filter set, with the
@@ -158,26 +175,19 @@ type Config struct {
 	// restart the reaper can briefly be orphaned, and a reaper that comes back
 	// with no clients prunes.
 	ReconnectionTimeout time.Duration
-	// RetryOffset is the settle window.
-	RetryOffset time.Duration
 }
 
 // The reaper's documented defaults. They are named here rather than read from a
 // doc comment because they are the values a caf session gets when it says
 // nothing, and a session that silently disagreed with a testcontainers session
-// in the same shell would be a bug nobody would find.
+// in the same shell would be a bug nobody would find. The set is exactly what
+// `moby-ryuk` reads — four variables, no retry offset — because a client that
+// reads a variable the reaper does not read is configuring nothing.
 const (
 	defaultAddress             = "localhost:8080"
 	defaultConnectionTimeout   = 10 * time.Second
 	defaultReconnectionTimeout = 10 * time.Second
-	defaultRetryOffset         = 10 * time.Second
 )
-
-// SettleOffset is the value that makes a sweep monotonic: anything created after
-// the prune pass began is skipped and the pass runs again. It is a named
-// constant rather than a number at a call site because "a negative offset" is
-// the entire mechanism and a reader should not have to reconstruct why.
-const SettleOffset = -1 * time.Second
 
 // ConfigFromEnv reads the reaper's configuration. RYUK=true turns the lease on;
 // a caf that never sets it takes no lease and is unaffected.
@@ -187,20 +197,25 @@ func ConfigFromEnv() Config {
 		Enabled:             envString("RYUK", "") != "false" && os.Getenv("RYUK") != "",
 		ConnectionTimeout:   envDuration("RYUK_CONNECTION_TIMEOUT", defaultConnectionTimeout),
 		ReconnectionTimeout: envDuration("RYUK_RECONNECTION_TIMEOUT", defaultReconnectionTimeout),
-		RetryOffset:         envDuration("RYUK_RETRY_OFFSET", defaultRetryOffset),
 	}
 }
 
-// WithSettle is the configuration caf actually uses: a reaper address, a filter
-// naming this session, and the settle window turned on. It is built rather than
-// read so that the filter cannot be empty by omission.
+// ConfigWithSession is the configuration caf actually uses: a reaper address and
+// the lease turned on. It is built rather than read so the caller cannot leave
+// it half-configured by omission.
+//
+// It does not build the filter, and that is deliberate rather than an oversight:
+// the session reaches the reaper through the label on `Filter`, and assembling
+// one here would be a second place the empty-filter refusal could be bypassed.
+// The `session` argument is what a caller passes to `SessionLabel`, so the two
+// travel together and a caller cannot pair a filter with an unrelated session by
+// accident.
 func ConfigWithSession(address, session string) Config {
 	return Config{
 		Address:             address,
 		Enabled:             true,
 		ConnectionTimeout:   defaultConnectionTimeout,
 		ReconnectionTimeout: defaultReconnectionTimeout,
-		RetryOffset:         SettleOffset,
 	}
 }
 

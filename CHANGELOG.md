@@ -62,6 +62,46 @@ All notable changes to caf are recorded here. The format follows
 
 ### Changed
 
+- **`internal/ryuk` no longer claims a settle window it could not provide.** The
+  package documented a "settle window" — a negative retry offset that would make
+  the reaper skip anything created after a prune pass began and sweep again — and
+  that was the stated answer to "how do you stop a sweeper killing a running
+  worker". The field was **write-only**: seven mentions in `client.go`, zero
+  reads, and `Filter.Lines` — the function that decides what goes on the wire —
+  did not mention it at all. The test asserting it equalled a pinned constant
+  proved only that a struct copy had happened. **A test asserting a field was
+  assigned is not a test that the field was used.**
+
+  Three measurements against `moby-ryuk` source say the window cannot exist, on
+  grounds that have nothing to do with this client: the reaper reads four
+  environment variables — connection timeout, port, reconnection timeout,
+  verbosity — and a retry offset is not one of them, at tag 0.8.1 or on `main`;
+  it calls its prune **exactly once** and then exits, so there is no second pass
+  for a settle window to re-enter; and its filter language cannot express a
+  created-at constraint at all, because the daemon validates container-list
+  filters against a fixed set with no created-at term, and an unknown key is a
+  hard error rather than a no-op. That last one is the dangerous part: smuggling
+  an unknown filter key in would fail *every* prune call and the reaper would
+  silently remove nothing — converting a working, if narrow, safety property into
+  a silent total failure.
+
+  So the field, the constant behind it, the environment read, and the test that
+  only checked the copy are gone. What caf actually gets is now stated plainly
+  in the package doc: **caf's reaper is a liveness guess, not a monotonic
+  sweep.** What protects a running worker is the lease — the reaper counts its
+  clients, and while the socket is open it prunes nothing — plus session-scoped
+  labels, which are structural. What is *not* claimed: a resource created after a
+  prune pass has begun, by anything, in a window a client cannot close. That gap
+  is real and narrow, and an honest gap is shippable where a fictional defence
+  is not. `TestNoSettleWindowIsClaimedOrConfigured` now reads the package's own
+  source and fails if the field, the variable, or the "liveness guess"
+  correction comes back.
+
+  **This removes a documented safety property.** Anyone who read the previous
+  changelog entry and believed the sweep was monotonic was misled, and the
+  mitigation for the underlying race lives elsewhere: `internal/reclaim`'s
+  generation fencing, which *is* implemented and tested.
+
 - **`caf doctor` is tri-state and is now a gate for `fail`.** Rows are
   `ok | warn | fail`; `warn` never moves the exit code; the command exits 1 only
   when some row is `fail`. This is a behaviour change to a shipped command and

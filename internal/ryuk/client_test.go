@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -261,19 +262,91 @@ func TestEachSessionGetsItsOwnLabel(t *testing.T) {
 	}
 }
 
-// The settle window is the answer to "how do you stop a sweeper killing a
-// running worker": the sweep is monotonic, so a resource created after the pass
-// began is skipped and the pass runs again. It is negative on purpose, and the
-// value is pinned so a "harmless" sign flip is a failing test rather than a
-// silent behaviour change.
-func TestTheSettleWindowIsNegative(t *testing.T) {
-	if SettleOffset >= 0 {
-		t.Fatalf("SettleOffset is %s; a non-negative offset does not make the sweep monotonic", SettleOffset)
+// There is no settle window, and this test is the reason it cannot quietly come
+// back. It replaces a test that asserted a configured value equalled a pinned
+// constant: that test passed on a field nothing read, and proved only that a
+// struct copy had happened.
+//
+// This one reads the source of this package off disk and holds three things at
+// once — the field is gone, the environment variable is gone, and the package
+// doc says in plain words that the reaper is a liveness guess. Each of the
+// three fails if someone reintroduces the fiction in a way that only updates
+// the code, or only updates the prose.
+func TestNoSettleWindowIsClaimedOrConfigured(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
 	}
-	cfg := ConfigWithSession("localhost:8080", "s")
-	if cfg.RetryOffset != SettleOffset {
-		t.Errorf("ConfigWithSession carries %s, want %s", cfg.RetryOffset, SettleOffset)
+	var files []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".go") {
+			files = append(files, e.Name())
+		}
 	}
+	if len(files) == 0 {
+		t.Fatal("no Go files found; this test would pass without checking anything")
+	}
+
+	// The literal is assembled rather than written, so that this file does not
+	// match itself. A test that has to be worded around its own subject is a test
+	// whose subject is still in the tree.
+	forbidden := []string{
+		"Retry" + "Offset",  // the field, in any casing or comment
+		"Settle" + "Offset", // the constant that made it look real
+		"RYUK_RETRY_" + "OFFSET",
+	}
+	for _, name := range files {
+		source, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, needle := range forbidden {
+			if strings.Contains(string(source), needle) {
+				t.Errorf("%s still mentions %q; the reaper has no such filter and no such variable, so this is a claim with nothing behind it", name, needle)
+			}
+		}
+	}
+
+	// The prose has to carry the correction, not just the code. A deleted field
+	// with an unedited doc comment is the same defect wearing a different hat.
+	source, err := os.ReadFile("client.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(source), "liveness guess") {
+		t.Error("client.go does not say that the reaper is a liveness guess; the package doc must state what caf actually gets")
+	}
+}
+
+// What the client actually configures is the variables the reaper reads, and
+// nothing else. This is the load-bearing half of the claim above: if caf reads
+// an environment variable `moby-ryuk` does not read, then setting it configures
+// nothing and looks like it works.
+//
+// The retired variable is still set here, to a settle-window value, precisely to
+// show that no field of Config reflects it. It is assembled at runtime for the
+// same reason the grep above assembles its needles: written literally it would
+// be a hit on itself, and a test that forbids a name while using the name is
+// testing nothing.
+func TestTheConfiguredEnvironmentIsExactlyWhatTheReaperReads(t *testing.T) {
+	retired := "RYUK_" + "RETRY_" + "OFFSET"
+	t.Setenv(retired, "-1s")
+	t.Setenv("RYUK_CONTAINER_HOST", "127.0.0.1:17771")
+	t.Setenv("RYUK_CONNECTION_TIMEOUT", "3s")
+	t.Setenv("RYUK_RECONNECTION_TIMEOUT", "30s")
+	t.Setenv("RYUK", "true")
+
+	got := ConfigFromEnv()
+	want := Config{
+		Address:             "127.0.0.1:17771",
+		Enabled:             true,
+		ConnectionTimeout:   3 * time.Second,
+		ReconnectionTimeout: 30 * time.Second,
+	}
+	if got != want {
+		t.Errorf("ConfigFromEnv() = %+v\nwant %+v", got, want)
+	}
+	t.Logf("%s is set to -1s and no field of Config reflects it, because moby-ryuk does not read it", retired)
 }
 
 // The environment is the reaper's own, with the reaper's defaults, so a caf
@@ -294,7 +367,6 @@ func TestConfigComesFromTheReapersOwnEnvironment(t *testing.T) {
 				Enabled:             false,
 				ConnectionTimeout:   10 * time.Second,
 				ReconnectionTimeout: 10 * time.Second,
-				RetryOffset:         10 * time.Second,
 			},
 		},
 		{
@@ -302,21 +374,20 @@ func TestConfigComesFromTheReapersOwnEnvironment(t *testing.T) {
 			env:  map[string]string{"RYUK": "true"},
 			want: Config{
 				Address: "localhost:8080", Enabled: true,
-				ConnectionTimeout: 10 * time.Second, ReconnectionTimeout: 10 * time.Second, RetryOffset: 10 * time.Second,
+				ConnectionTimeout: 10 * time.Second, ReconnectionTimeout: 10 * time.Second,
 			},
 		},
 		{
-			name: "a different reaper and a settle window",
+			name: "a different reaper",
 			env: map[string]string{
 				"RYUK":                      "true",
 				"RYUK_CONTAINER_HOST":       "127.0.0.1:17771",
 				"RYUK_CONNECTION_TIMEOUT":   "2s",
 				"RYUK_RECONNECTION_TIMEOUT": "30",
-				"RYUK_RETRY_OFFSET":         "-1s",
 			},
 			want: Config{
 				Address: "127.0.0.1:17771", Enabled: true,
-				ConnectionTimeout: 2 * time.Second, ReconnectionTimeout: 30 * time.Second, RetryOffset: -1 * time.Second,
+				ConnectionTimeout: 2 * time.Second, ReconnectionTimeout: 30 * time.Second,
 			},
 		},
 		{
@@ -324,7 +395,7 @@ func TestConfigComesFromTheReapersOwnEnvironment(t *testing.T) {
 			env:  map[string]string{"RYUK": "false"},
 			want: Config{
 				Address: "localhost:8080", Enabled: false,
-				ConnectionTimeout: 10 * time.Second, ReconnectionTimeout: 10 * time.Second, RetryOffset: 10 * time.Second,
+				ConnectionTimeout: 10 * time.Second, ReconnectionTimeout: 10 * time.Second,
 			},
 		},
 	}
@@ -333,7 +404,7 @@ func TestConfigComesFromTheReapersOwnEnvironment(t *testing.T) {
 			for name, value := range tt.env {
 				t.Setenv(name, value)
 			}
-			for _, name := range []string{"RYUK", "RYUK_CONTAINER_HOST", "RYUK_CONNECTION_TIMEOUT", "RYUK_RECONNECTION_TIMEOUT", "RYUK_RETRY_OFFSET"} {
+			for _, name := range []string{"RYUK", "RYUK_CONTAINER_HOST", "RYUK_CONNECTION_TIMEOUT", "RYUK_RECONNECTION_TIMEOUT"} {
 				if _, set := tt.env[name]; !set {
 					t.Setenv(name, "")
 				}
@@ -351,14 +422,16 @@ func TestConfigComesFromTheReapersOwnEnvironment(t *testing.T) {
 func TestAGarbageDurationFallsBackToTheDefault(t *testing.T) {
 	t.Setenv("RYUK", "true")
 	t.Setenv("RYUK_CONNECTION_TIMEOUT", "soon")
-	t.Setenv("RYUK_RETRY_OFFSET", "-1s")
+	t.Setenv("RYUK_RECONNECTION_TIMEOUT", "30")
 
 	got := ConfigFromEnv()
 	if got.ConnectionTimeout != defaultConnectionTimeout {
 		t.Errorf("ConnectionTimeout = %s, want the default %s", got.ConnectionTimeout, defaultConnectionTimeout)
 	}
-	if got.RetryOffset != -1*time.Second {
-		t.Errorf("RetryOffset = %s, want -1s", got.RetryOffset)
+	// The neighbouring field is asserted too, so that fixing one cannot come at
+	// the cost of the other and a test still goes green.
+	if got.ReconnectionTimeout != 30*time.Second {
+		t.Errorf("ReconnectionTimeout = %s, want 30s", got.ReconnectionTimeout)
 	}
 }
 

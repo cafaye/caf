@@ -20,3 +20,6 @@ func sysctlByName(name string) (uint64, error) {
 	}
 	return strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64)
 }
+
+// totalMemoryBytes is the memory question in this platform's spelling.
+func totalMemoryBytes() (uint64, error) { return sysctlByName("hw.memsize") }

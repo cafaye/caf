@@ -77,6 +77,13 @@ behavior test, and a bad-argument test.
 `package cli`, so they reach unexported machinery. Prefer a table with a
 `name` field over a sequence of asserts.
 
+**A `//go:build` surface is code, and it is compiled or it is nothing.** `go vet`
+and `go test` only see the files for the platform they run on, so a fallback that
+nobody has compiled is a fallback that is broken. `internal/ci` cross-compiles the
+tree for every release target; a package with build-tagged files gets its own
+reachability check as well (`TestEveryLockImplementationIsReachableOnSomePlatform`,
+because a typo in a tag leaves a file that is dead code and every test green).
+
 **No globals.** A command receives everything through `*Env` (version, stdout,
 stderr) and returns an `error`. `main` is the only place that reads
 `os.Args`, `os.Stdout` and the link-time version variables. This is what keeps
@@ -277,8 +284,12 @@ Docker socket mounted is started, and a control container plus a sibling worker'
 resources asserted intact afterwards. **Read those comments before running one on
 a machine that is not yours.**
 
-`internal/ci`'s test is the third tier and it is different in kind: it runs in
-CI, and its job is to fail when something that used to run stops running.
+`internal/ci` holds the other two checks, and one of them is a gate cost worth
+knowing about: `TestTheTreeBuildsForEveryReleaseTarget` cross-compiles the whole
+tree for every `goos` in `.goreleaser.yml`, which is about fifteen seconds of a
+cold build. It earns that, because it is the only thing in the repository that
+would have noticed `caf` did not compile for Windows at all — a gap that had been
+there since `doctor`'s memory probe was written for two platforms.
 
 ## Gates
 

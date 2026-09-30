@@ -25,6 +25,11 @@ import (
 type Lock struct {
 	file *os.File
 	name string
+	// path is the file this lock created and has to remove. It is the same
+	// directory and base name as file.Name() on unix, where the file is never
+	// removed, so keeping it is free and the two implementations differ in one
+	// field rather than in a method.
+	path string
 }
 
 // ErrHeld is a lock somebody else has. It is a distinct sentinel because the fix

@@ -35,8 +35,14 @@ const (
 // number in a report, and AGENTS.md asks for the argument before the third. A
 // machine whose memory cannot be read reports zero, which the row prints as "did
 // not report" rather than as a machine with no memory at all.
+//
+// It is a question rather than a sysctl, because the platforms do not agree on
+// how to ask: two sysctls on the BSDs and Linux, one Win32 call on Windows. The
+// platform file answers the question in its own spelling and
+// TestTheBuildTaggedFilesCompileForEveryPlatformTheBinaryShips is what proves
+// every spelling still compiles.
 func totalMemory() uint64 {
-	value, err := sysctlByName("hw.memsize")
+	value, err := totalMemoryBytes()
 	if err != nil {
 		return 0
 	}

@@ -16,6 +16,7 @@ shared CI and lint configuration comes from `cafaye/kit` — neither lives here.
 cmd/caf/main.go     thin entrypoint: build a cli.Options, exit with its code
 internal/cli/       router, registry, one file per subcommand
 internal/contract/  the core contract: manifests, the vendored schema, versions
+internal/dev/       the local stack: the planner, the renderer, two seams
 bin/prime           the gate: go mod download && go build ./... && go test ./...
 ```
 
@@ -30,6 +31,21 @@ bin/prime           the gate: go mod download && go build ./... && go test ./...
 
 A subcommand never reaches into another subcommand, and nothing outside
 `internal/cli` is imported by `internal/cli`.
+
+`internal/dev` is split by what it is for, and exists so that `dev` and `deploy`
+do not each grow their own idea of what a stack is:
+
+- `doc.go` — what the package is, and the JSON document it expects from a
+  registry. The shape is written out there because it is the contract between
+  caf and pantry, and a contract that lives only in one function signature is a
+  contract nobody outside this repository can implement.
+- `plan.go` — `Plan`, the whole decision, and the three refusals: a dependency
+  cycle, a port conflict, an unresolvable dependency.
+- `render.go` — the compose document, written by hand.
+- `registry.go` — the `Registry` seam, the catalog, and the language and
+  infrastructure tables.
+- `project.go` — reading a project directory: the manifest, the Dockerfile.
+- `runtime.go` — the `Runtime` seam, the wait loop, and the state mapping.
 
 `internal/contract` is split by what it is for, and owns everything the
 contract needs so that `init`, `gen` and `deploy` do not each grow their own:
@@ -81,15 +97,46 @@ with its full invocation (`contract lint`), so its help and its usage errors
 read as the words the user typed. It is dispatched by the parent's `Run` and is
 never registered in `Commands()`.
 
-**No network, no subprocesses, no containers.** Not in v0 and not behind a flag
-that is off by default. `doctor` resolves binaries on `PATH` with
-`exec.LookPath` and does not execute them.
+**One pure function and two seams.** `internal/dev.Plan` takes a manifest, a
+registry and some options, and returns a rendered compose document and a start
+order. It reads no file, opens no socket and runs no command. Everything that
+does touch the world is behind one of two interfaces in that package: `Registry`
+(how a service is run locally) and `Runtime` (the container runtime, three calls
+wide). Both have one real implementation and a fake is a dozen lines.
+
+This is the constraint that shapes the whole package, so it is worth stating
+plainly: **no test starts a container.** A test that needs Docker to prove
+something is a test that has not found the seam yet. Two clocks are seams for
+the same reason — injecting a sleep but not the clock it is measured against
+leaves a test that spins on the wall clock until the deadline it is testing.
+
+**No network, no containers, and subprocesses only where the question needs
+one.** `doctor`'s tool table resolves binaries on `PATH` with `exec.LookPath` and
+does not execute them, and that half is still safe on a bare CI runner. Its
+*environment* section is the exception, and it is the exception the question
+requires: "is the container runtime installed **and running**" cannot be answered
+from `PATH`, because `docker --version` succeeds whether or not a daemon is
+answering, so a report that only resolved the binary would say `ok` on a machine
+where nothing can start. So `doctor`'s environment section runs one bounded
+`docker version`, and reads memory and free ports without a subprocess. No other
+command runs anything except `dev`, which runs `docker compose`.
+
+**A generated artifact is written and printed.** `caf dev` writes the compose
+file and prints it in full. A command that generates something nobody can
+inspect is a command nobody can debug, and a document that only lives inside a
+tool is a document nobody can diff. The file is byte-identical between runs of
+one manifest, so the diff between two of them is a diff between two manifests.
 
 **Stdlib only, except where the contract demands otherwise.** The router is
 hand-rolled on `flag`; do not add cobra, urfave/cli or a TUI framework without
-asking. The TUI is a later packet and will use `refs/bubbletea/examples`. The
-one exception is `internal/contract`, which has two dependencies because the
-standard library cannot do either job: `github.com/goccy/go-yaml` for YAML
+asking. The TUI is a later packet and will use `refs/bubbletea/examples`; `caf
+dev` prints plain ordered progress in the meantime, which is the same
+information and needs no framework. The compose document is written by hand in
+`internal/dev/render.go` rather than marshalled, because the standard library
+has no YAML encoder and a general one would order the document's keys by
+whatever order its own map does — which is the one thing about it that must not
+happen. The one exception is `internal/contract`, which has two dependencies
+because the standard library cannot do either job: `github.com/goccy/go-yaml` for YAML
 (chosen for parse errors with a line and a column, and for zero dependencies)
 and `github.com/santhosh-tekuri/jsonschema/v6` for draft 2020-12 validation.
 A third dependency needs the same argument in the package doc.

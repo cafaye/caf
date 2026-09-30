@@ -1,11 +1,193 @@
 #!/bin/sh
-# The gate for a Go repository in the cafaye org. Download, build, test.
+# The gate for caf. Download, build, test, and then say what it did.
 #
-#   bin/prime
+#   bin/prime            the fast gate. The live tier skips, loudly, and is counted.
+#   bin/prime --live     the fast gate plus the two live tests, which need a container
+#                        runtime. Exits nonzero unless both of them actually ran.
 #
-# This is the kit Go template; if kit changes it, follow kit.
+# NOT kit's Go template, and not claimed to be. It was, until caf-07, down to a
+# stale comment saying so; AGENTS.md has said the opposite for a packet already.
+# It is cafaye's own because `gate.yml` declares a proof that this script's own
+# output has to satisfy, and a template that other repositories also use cannot
+# promise a line of output that only this repository's declaration can match.
+#
+# Three properties, in the order they matter.
+#
+# 1. The exit code is `go test`'s own, because nothing here is piped. This
+#    fleet's one recorded false green was `... | tail -45; echo "PRIME EXIT=$?"`
+#    under zsh, where `$?` is tail's and tail is always zero. So the run's
+#    output goes to a file, the file is printed, and the status is captured
+#    directly rather than read off a pipeline. `set -o pipefail` is not
+#    available here: this is `/bin/sh`, and `PIPESTATUS` is a bash array.
+#
+# 2. The output says how much ran. `go test` prints one `ok <pkg> <time>` line
+#    per package and no test count at all, so before this packet a reader could
+#    not tell 428 tests from 4, and neither could a declaration. The two
+#    `caf:` lines below are the only countable output this gate has, and
+#    `gate.yml`'s three floors are read out of the first of them. They are
+#    counted from `go test -v`, which replays a cached run's verbose output
+#    verbatim -- so a second `bin/prime` on an unchanged tree reports the same
+#    numbers as the first, and `-count=1` is deliberately NOT here, because
+#    adding it would change what a green `bin/prime` means (AGENTS.md).
+#
+# 3. A skip is never silent. Every run reports the live tier's execution count
+#    out of the tier's size, so a live test cannot be added, removed, renamed or
+#    quietly un-gated without the number moving. That is what `gate.yml`'s
+#    `live-tier` proof matches, and it is why the tier size is written into
+#    this script rather than derived: the list below is the single source of
+#    truth, and `internal/ci`'s TestTheGateAccountsForEveryLiveTest fails if it
+#    and the tree's env-gated tests stop being the same set.
+#
+# What is NOT in this gate, and why, is in AGENTS.md and in
+# REPORT-caf-07-gate.md: `go vet` and `gofmt -l .` are required before a commit
+# and are not here, and the live tier is a demonstration rather than a check.
+
 set -eu
+
+# ---------------------------------------------------------------------------
+# flags
+# ---------------------------------------------------------------------------
+
+usage() {
+  cat <<'USAGE'
+usage: bin/prime [--live]
+
+  (no flags)  go mod download, go build ./..., go test ./...
+  --live      the same, with CAF_LIVE_DOCKER=1 and CAF_LIVE_RYUK=1 set, so the
+              two live tests run instead of skipping. Needs a container runtime,
+              and is asserted: if the live tier did not run, this exits nonzero.
+USAGE
+}
+
+# The live tier, by name. One list, and every use of it is here or in
+# internal/ci's test that keeps it honest -- there is no second copy to drift.
+#
+# These are demonstration tests, not checks, and the reasons are measured
+# rather than assumed. TestTheSilentCollisionIsReal asserts a blind spot of a
+# *particular* container runtime: on a runtime that arbitrates properly (plain
+# dockerd) its first subtest `t.Fatalf`s rather than skipping, because a
+# container published onto a bound host port is refused there. So it can never
+# be a gate that runs on a GitHub-hosted runner. The ryuk one is portable in
+# principle and is currently RED on this machine -- see
+# REPORT-caf-07-gate.md. That is a reason to report it loudly, not a reason to
+# leave it out of the count.
+LIVE_TESTS='TestTheSilentCollisionIsReal|TestAClosedLeaseReapsAndAnOpenOneDoesNot'
+
+# The size of the tier, written down rather than computed, because it is the
+# number `gate.yml`'s `live-tier` proof matches and because a count derived
+# from the same text it is checked against would prove nothing. internal/ci
+# asserts it against the tree.
+LIVE_TIER=2
+
+live=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --live) live=1 ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      # Exit 2, which is this repository's `errUsage`: the user invoked caf
+      # wrongly. A wrong flag must not read as a passing gate.
+      printf 'bin/prime: unknown argument %s\n\n' "$1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+if [ "$live" -eq 1 ]; then
+  CAF_LIVE_DOCKER=1
+  CAF_LIVE_RYUK=1
+  export CAF_LIVE_DOCKER CAF_LIVE_RYUK
+fi
+
+# ---------------------------------------------------------------------------
+# the gate
+# ---------------------------------------------------------------------------
 
 go mod download
 go build ./...
-go test ./...
+
+# A file, not a pipe. See property 1 in the header.
+LOG="$(mktemp "${TMPDIR:-/tmp}/caf-prime.XXXXXX")"
+trap 'rm -f "$LOG"' EXIT
+
+status=0
+go test -v ./... >"$LOG" 2>&1 || status=$?
+
+cat "$LOG"
+
+# ---------------------------------------------------------------------------
+# the accounting
+# ---------------------------------------------------------------------------
+#
+# `grep -c` prints 0 and EXITS 1 when there is nothing to count, so under
+# `set -e` a bare `$(grep -c ...)` ends the gate over a suite that reported no
+# matches at all -- the wrong failure for a real reason. `|| true` keeps the
+# printed 0 and the zero status.
+count() { grep -Ec "$1" "$LOG" || true; }
+
+# Top-level and any-level, because a decrease has to be caught wherever it
+# happened. A test that moved from `func TestX` to a subtest of another test
+# keeps the "any" count and loses the "top-level" one, and only the second
+# floor notices.
+top_pass=$(count '^--- PASS: ')
+all_pass=$(count '^[[:space:]]*--- PASS: ')
+all_fail=$(count '^[[:space:]]*--- FAIL: ')
+all_skip=$(count '^[[:space:]]*--- SKIP: ')
+# `go list` through `grep -c` rather than `wc -l`. Two reasons, both found by
+# running this script under a minimal PATH: `wc` pads its output with leading
+# spaces on some platforms and `tr` then has to strip them, and when `wc` is
+# missing altogether the summary printed `caf:  packages, …` — an EMPTY field,
+# which reads as a count of nothing rather than as a broken gate. `grep` is
+# already a dependency of the counting below, so this adds no tool.
+packages=$(go list ./... | grep -c . || true)
+
+subtest_pass=$((all_pass - top_pass))
+
+# Which of the live tier ran. Only a top-level PASS counts: a live test that
+# skipped did not run, and one that was deleted is not running either -- which
+# is the case internal/ci's test refuses to let happen quietly.
+live_pass=$(count "^--- PASS: ($LIVE_TESTS) ")
+
+printf 'caf: %s packages, %s top-level passes, %s subtest passes, %s failures, %s skips\n' \
+  "$packages" "$top_pass" "$subtest_pass" "$all_fail" "$all_skip"
+
+case "$live_pass" in
+  "$LIVE_TIER")
+    printf 'caf: live tier: %s of %s executed\n' "$live_pass" "$LIVE_TIER"
+    ;;
+  0)
+    # Two different reasons for the same zero, and the line says which. A gate
+    # that reported "not enabled" to somebody who had just typed --live would
+    # send them looking for a flag problem instead of a missing runtime.
+    if [ "$live" -eq 1 ]; then
+      printf 'caf: live tier: 0 of %s executed; --live asked for it and it did not run, which means no container runtime answered on PATH\n' "$LIVE_TIER"
+    else
+      printf 'caf: live tier: 0 of %s executed; not enabled, so the two live tests skipped rather than ran. Set CAF_LIVE_DOCKER=1 and CAF_LIVE_RYUK=1, or run bin/prime --live\n' "$LIVE_TIER"
+    fi
+    ;;
+  *)
+    printf 'caf: live tier: %s of %s executed; the live tier is only ever all or nothing\n' "$live_pass" "$LIVE_TIER"
+    ;;
+esac
+
+# ---------------------------------------------------------------------------
+# what --live is for
+# ---------------------------------------------------------------------------
+#
+# `--live` is the mode in which the live tier cannot silently not run. Without
+# this assertion the flag would be a suggestion, and a gate that ran the live
+# tier zero times while claiming to is the exact defect this packet exists to
+# refuse. It is a separate mode and not the declared gate because the tier is
+# machine-specific -- see the header, and REPORT-caf-07-gate.md.
+if [ "$live" -eq 1 ] && [ "$live_pass" -ne "$LIVE_TIER" ] && [ "$status" -eq 0 ]; then
+  printf 'bin/prime --live: the live tier ran %s of %s tests, so this run proves nothing about it. A demonstration that did not happen is not a pass.\n' \
+    "$live_pass" "$LIVE_TIER" >&2
+  status=1
+fi
+
+exit "$status"

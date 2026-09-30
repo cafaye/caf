@@ -23,9 +23,29 @@ go install github.com/cafaye/caf/cmd/caf@latest
 Or build from source:
 
 ```sh
-bin/prime              # go mod download && go build ./... && go test ./...
+bin/prime              # go mod download && go build ./... && go test -v ./... , then say what ran
 go build ./cmd/caf
 ```
+
+`bin/prime` is the gate, and it is declared rather than guessed: [`gate.yml`](gate.yml)
+at the repository root says what it is, what it needs from the machine, and what
+its own output must contain before the word "passed" means anything. The format,
+the checker and the reasoning are `cafaye/core`'s
+(`schemas/gate.schema.json`, `harness/gate_check.py`, `docs/gate.md`). Check it
+without running anything:
+
+```sh
+../core/harness/bin/gate-check .            # the static half
+../core/harness/bin/gate-check --prove .    # and the proving half, which runs bin/prime
+tests/gate-declaration-self-test.sh         # and that the declaration can go red
+```
+
+Two things about it that are worth knowing before you read the file.
+`bin/prime --live` additionally runs the two live tests in
+`internal/ports/live_test.go` and `internal/ryuk/live_test.go`, which need a
+container runtime and are otherwise skipped — and it refuses to report success if
+they did not run. And the declaration's `live-tier` proof exists so that a run in
+which they *were* skipped cannot read as a run in which they passed.
 
 ## Commands
 

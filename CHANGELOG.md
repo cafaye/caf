@@ -8,6 +8,91 @@ All notable changes to caf are recorded here. The format follows
 
 ### Added
 
+- **A gate declaration** (`gate.yml`). caf now says what its gate is, what the
+  gate needs from the machine, and what the gate's own output must contain
+  before the word "passed" means anything. The format is `cafaye/core`'s
+  `schemas/gate.schema.json`, the checker is its `harness/gate_check.py`, and
+  the reasoning is its `docs/gate.md` — the brief for this packet is debt entry
+  D2, and closing it is the whole of this change.
+
+  Two reasons this was more than a YAML file. caf-06 merged 12,480 lines across
+  60 files into the component whose entire job is noticing that a port is
+  occupied and reclaiming what is not, and **a service that cannot fail is worse
+  than no service, because it is trusted.** And `go test` prints one `ok <pkg>`
+  line per package and no test count at all, so there was nothing in this tree
+  for a floor to be read from; the declaration's three floors are the reason
+  `bin/prime` grew the accounting below.
+
+- **A countable summary from the gate.** `bin/prime` now runs `go test -v`, and
+  its last two lines are the only countable output this gate has:
+
+  ```
+  caf: 10 packages, 432 top-level passes, 537 subtest passes, 0 failures, 3 skips
+  caf: live tier: 0 of 2 executed; not enabled, so the two live tests skipped rather than ran. …
+  ```
+
+  Three floors are read out of the first line — 10 packages, 432 top-level tests,
+  537 subtests — and the second is matched by a floorless `live-tier` proof whose
+  pattern carries the tier size as a literal. A skipped live tier that is not
+  stated in the gate's own output cannot be a silent pass: delete the line and
+  `gate-check --prove` is red with `gate.proof-missing`.
+
+  The exit code is still `go test`'s own, because **nothing here is piped**. The
+  run's output goes to a `mktemp` file, the file is printed, and the status is
+  captured directly — this fleet's one recorded false green was
+  `… | tail -45; echo "PRIME EXIT=$?"` under zsh, where `$?` is `tail`'s.
+  `-count=1` is deliberately still absent: `go test` replays a cached run's
+  verbose output verbatim, so a second run on an unchanged tree reports the same
+  numbers, and adding `-count=1` would change what a green `bin/prime` means.
+
+- **`bin/prime --live`**, which sets `CAF_LIVE_DOCKER=1` and `CAF_LIVE_RYUK=1`
+  and runs the two live tests instead of skipping them. It is a second mode and
+  not the declared gate, and the three measured reasons are in the file's own
+  header. What it buys is the one thing the fast gate cannot: it **exits nonzero
+  if the live tier did not execute**, so "a demonstration that did not happen"
+  is a red rather than a green badge. That is asserted by the self-test below, by
+  running the real gate on a `PATH` with no container runtime on it.
+
+- **`tests/gate-declaration-self-test.sh`**, the control over the control. It
+  copies this repository's declaration, breaks exactly one thing at a time, and
+  asserts core's checker goes red **and names the finding it expects** — because
+  "something went red" is a much weaker claim than "the check written for this
+  defect is still load-bearing", and the second is what decays silently. 3
+  controls, 21 breakages, 5 warning cases, 0 skipped. It is deliberately not
+  part of `bin/prime`: a self-test inside every gate invocation would be a second
+  gate that can disagree with the first.
+
+- **Three checks in `internal/ci` over the gate itself.** The live tier's list
+  in `bin/prime` is checked against the tree's env-gated tests with `go/ast`, so
+  a third demonstration cannot appear and be invisible to the declaration; the
+  gate's two summary lines are pinned verbatim; and
+  `TestTheGateFloorIsNotBelowTheSuiteCafClaimsToHave` is core's ratchet, exact in
+  both directions — **adding a test fails the gate until `gate.yml`'s floor is
+  raised in the same commit, and a test that starts skipping fails it the same
+  way.**
+
+### Changed
+
+- **`bin/prime` no longer claims to be kit's Go template.** Its header said
+  "This is the kit Go template; if kit changes it, follow kit", which AGENTS.md
+  has contradicted for a packet already. It is cafaye's own, and it has to be: a
+  template other repositories also use cannot promise a line of output that only
+  this repository's declaration can match.
+
+- **`bin/prime` no longer depends on `wc` or `tr`.** Found by running the gate
+  under a minimal `PATH`: with `wc` missing it printed `caf:  packages, …` — an
+  empty field, which reads as a count of nothing rather than as a broken gate.
+  The package count goes through `grep -c`, which the counting below already
+  needed.
+
+### Fixed
+
+- Nothing that changes behaviour. The two findings this packet turned up in
+  `internal/ryuk` — a settle window that is never transmitted, and a live test
+  whose whole-machine assertion cannot pass on a shared machine — are **reported
+  and not fixed**, because a fix belongs in a packet about `internal/ryuk` and
+  not in a rider here. See `REPORT-caf-07-gate.md`.
+
 - **The reclamation ledger** (`internal/ledger`). Every stack caf brings up is
   written to a ledger **before** the resource is created, so a caf killed
   mid-run leaves a row naming something that still exists. The reverse order is

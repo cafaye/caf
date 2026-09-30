@@ -97,7 +97,7 @@ func TestResolveMatrix(t *testing.T) {
 		{name: "floor accepts the floor", constraint: ">=1.2.3", version: "1.2.3", want: true},
 		{name: "floor accepts a later major", constraint: ">=1.2.3", version: "9.0.0", want: true},
 		{name: "floor rejects below", constraint: ">=1.2.3", version: "1.2.2", want: false},
-		{name: "floor on 0.x rejects a later minor", constraint: ">=0.1.0", version: "0.2.0", want: false},
+		{name: "floor on 0.x is still a floor, not a minor range", constraint: ">=0.1.0", version: "0.2.0", want: true},
 
 		// the versions a cafaye service is actually pinned to
 		{name: "identity's range takes core 0.1.0", constraint: "^0.1.0", version: "0.1.0", want: true},
@@ -302,9 +302,9 @@ func TestParseConstraintErrorNamesTheGrammar(t *testing.T) {
 // than 9.0.0, which a string comparison gets backwards.
 func TestVersionCompare(t *testing.T) {
 	tests := []struct {
-		left string
+		left  string
 		right string
-		want int
+		want  int
 	}{
 		{left: "1.2.3", right: "1.2.3", want: 0},
 		{left: "1.2.4", right: "1.2.3", want: 1},

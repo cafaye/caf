@@ -19,6 +19,14 @@ import (
 // that ran and failed. It is what separates exit code 2 from exit code 1.
 var errUsage = errors.New("usage")
 
+// errReported marks a command that has already said everything it has to say
+// on stdout — a lint report with an invalid manifest in it, a resolve that
+// came back "no". The verdict is the report; printing it a second time on
+// stderr would put the same sentence in two places, one of which a CI log
+// greps and the other of which nobody reads. It still exits 1: something was
+// checked and it did not pass.
+var errReported = errors.New("reported")
+
 // Options is one CLI invocation. main fills it from the process; tests fill it
 // from buffers.
 type Options struct {
@@ -51,6 +59,11 @@ func Run(opts Options) int {
 	err := newRoot(env).execute(env, opts.Args)
 	if err == nil {
 		return exitSuccess
+	}
+	// The command already printed its own report; the exit code is all that is
+	// left to say, and stderr stays empty so the report is not duplicated.
+	if errors.Is(err, errReported) {
+		return exitFailure
 	}
 
 	fmt.Fprintf(env.Stderr, "caf: %v\n", err)
@@ -165,11 +178,14 @@ func printRootHelp(commands []*Command, w io.Writer) {
 	fmt.Fprint(w, "Every subcommand has its own help: caf help <command>\n")
 }
 
-// printHelp writes one command's help: its summary, its usage line and every
-// flag it declares, with defaults.
+// printHelp writes one command's help: its summary, its usage line, any prose
+// the command adds, and every flag it declares, with defaults.
 func printHelp(w io.Writer, c *Command) {
 	fmt.Fprintf(w, "caf %s - %s\n\n", c.Name, c.Summary)
 	fmt.Fprintf(w, "Usage:\n  %s\n", c.Usage)
+	if c.LongHelp != "" {
+		fmt.Fprintf(w, "\n%s", c.LongHelp)
+	}
 
 	fs := c.FlagSet()
 	if countFlags(fs) == 0 {

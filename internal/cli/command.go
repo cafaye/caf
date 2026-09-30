@@ -15,15 +15,21 @@ var errNotImplemented = errors.New("not implemented in v0")
 // Command is one caf subcommand.
 //
 // Name is the word the user types, Summary is its one-line help, Usage is the
-// full usage line, Flags declares the flags it accepts and Run receives the
-// positional arguments left over after parsing. Flags must precede positional
-// arguments, which is the rule the standard flag package enforces.
+// full usage line, LongHelp is optional prose printed under the usage, Flags
+// declares the flags it accepts and Run receives the positional arguments left
+// over after parsing. Flags must precede positional arguments, which is the
+// rule the standard flag package enforces.
+//
+// A subcommand of a subcommand is a Command too, with its full invocation as
+// its Name: `caf contract lint` is one command named "contract lint", so its
+// help and its usage errors read exactly as the person typed them.
 type Command struct {
-	Name    string
-	Summary string
-	Usage   string
-	Flags   func(fs *flag.FlagSet)
-	Run     func(args []string, env *Env) error
+	Name     string
+	Summary  string
+	Usage    string
+	LongHelp string
+	Flags    func(fs *flag.FlagSet)
+	Run      func(args []string, env *Env) error
 }
 
 // FlagSet builds a fresh flag set for the command. A new one per invocation

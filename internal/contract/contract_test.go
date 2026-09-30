@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -94,10 +95,10 @@ func TestFirstViolationNamesTheFieldAndTheRule(t *testing.T) {
 
 	first := manifest.Check()[0]
 
-	if want := `name: "Billing_Service" does not match "^[a-z][a-z0-9]*(-[a-z0-9]+)*$"`; first.Message != want {
-		t.Errorf("first violation = %q, want %q", first.Message, want)
+	if want := `"Billing_Service" does not match "^[a-z][a-z0-9]*(-[a-z0-9]+)*$"`; first.Message != want {
+		t.Errorf("first violation message = %q, want %q", first.Message, want)
 	}
-	if want := "name: " + first.Message; first.String() != want {
+	if want := `name: "Billing_Service" does not match "^[a-z][a-z0-9]*(-[a-z0-9]+)*$"`; first.String() != want {
 		t.Errorf("String() = %q, want %q", first.String(), want)
 	}
 }
@@ -173,7 +174,8 @@ func TestParseReportsYAMLErrorsAsViolations(t *testing.T) {
 	}{
 		{name: "a tab indent", yaml: "name: courier\nexposes:\n\tevents: []\n"},
 		{name: "an unclosed bracket", yaml: "name: [courier\n"},
-		{name: "a duplicate anchor", yaml: "name: *missing\n"},
+		{name: "an undefined alias", yaml: "name: *missing\n"},
+		{name: "a duplicated key", yaml: "name: courier\nname: identity\n"},
 	}
 
 	for _, tt := range tests {
@@ -219,20 +221,41 @@ func TestCheckStopsAtTheSchemaForMistypedFields(t *testing.T) {
 		wantPath    string
 	}{
 		{
-			name:        "exposes is a string",
-			yaml:        manifestWith("exposes: openapi.yaml"),
+			name: "exposes is a string",
+			yaml: "name: courier\n" +
+				"language: elixir\n" +
+				"core: ^0.1.0\n" +
+				"exposes: openapi.yaml\n" +
+				"repository:\n" +
+				"  url: git@github.com:cafaye/courier.git\n" +
+				"owner:\n" +
+				"  team: courier\n",
 			wantKeyword: "type",
 			wantPath:    "exposes",
 		},
 		{
-			name:        "consumes is a mapping",
-			yaml:        manifestWith("consumes:\n  user: created"),
+			name: "consumes is a mapping",
+			yaml: "name: courier\n" +
+				"language: elixir\n" +
+				"core: ^0.1.0\n" +
+				"consumes:\n" +
+				"  user: created\n" +
+				"repository:\n" +
+				"  url: git@github.com:cafaye/courier.git\n" +
+				"owner:\n" +
+				"  team: courier\n",
 			wantKeyword: "type",
 			wantPath:    "consumes",
 		},
 		{
-			name:        "name is a number",
-			yaml:        manifestWith("name: 42"),
+			name: "a name is a number",
+			yaml: "name: 42\n" +
+				"language: elixir\n" +
+				"core: ^0.1.0\n" +
+				"repository:\n" +
+				"  url: git@github.com:cafaye/courier.git\n" +
+				"owner:\n" +
+				"  team: courier\n",
 			wantKeyword: "type",
 			wantPath:    "name",
 		},
@@ -245,8 +268,14 @@ func TestCheckStopsAtTheSchemaForMistypedFields(t *testing.T) {
 		{
 			name:        "the document is empty",
 			yaml:        "",
-			wantKeyword: "required",
+			wantKeyword: "type",
 			wantPath:    "",
+		},
+		{
+			name:        "a contact is not an email",
+			yaml:        manifestWith("owner:\n  team: courier\n  contact: not-an-email\n"),
+			wantKeyword: "format",
+			wantPath:    "owner/contact",
 		},
 	}
 
@@ -404,10 +433,9 @@ func TestVendoredSchemaCompilesAsDraft202012(t *testing.T) {
 	}
 
 	var declared struct {
-		Schema  string `json:"$schema"`
-		ID      string `json:"$id"`
-		Title   string `json:"title"`
-		Pattern string `json:"$defs"`
+		Schema string `json:"$schema"`
+		ID     string `json:"$id"`
+		Title  string `json:"title"`
 	}
 	if err := json.Unmarshal(manifestSchemaJSON, &declared); err != nil {
 		t.Fatalf("decode vendored schema: %v", err)
@@ -471,18 +499,48 @@ func TestVendoredSchemaPinsTheEventTypePattern(t *testing.T) {
 	}
 }
 
-// manifestWith is a minimal valid manifest with one extra top-level key, for
-// the mistyped-field cases above.
-func manifestWith(extra string) string {
+// The validator walks the instance's Go map, so the order it reports
+// violations in is whatever the map iteration gave it. A linter whose headline
+// error changes between runs cannot be read in a CI log, so the order is
+// pinned to the order of the document. This test would pass by luck once and
+// fail on some later run if the sort were removed — which is why it repeats.
+func TestViolationOrderIsStableAcrossRuns(t *testing.T) {
+	first := violationPaths(t, fixture(t, "invalid/manifest.cafaye.invalid.yml"))
+	if len(first) < 2 {
+		t.Fatalf("fixture reports %v, want at least two violations to order", first)
+	}
+
+	for run := 0; run < 20; run++ {
+		got := violationPaths(t, fixture(t, "invalid/manifest.cafaye.invalid.yml"))
+		if !slices.Equal(got, first) {
+			t.Fatalf("run %d reported %v, want %v", run, got, first)
+		}
+	}
+}
+
+func violationPaths(t *testing.T, data []byte) []string {
+	t.Helper()
+	manifest, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	paths := make([]string, 0, len(manifest.Check()))
+	for _, violation := range manifest.Check() {
+		paths = append(paths, violation.Path)
+	}
+	return paths
+}
+
+// manifestWith wraps a block of top-level fields in an otherwise valid
+// manifest, so a case is one interesting field instead of twelve.
+func manifestWith(fields string) string {
 	return "name: courier\n" +
 		"language: elixir\n" +
 		"core: ^0.1.0\n" +
-		extra +
+		fields +
 		"repository:\n" +
 		"  url: git@github.com:cafaye/courier.git\n" +
-		"  defaultBranch: master\n" +
-		"owner:\n" +
-		"  team: courier\n"
+		"  defaultBranch: master\n"
 }
 
 func formatViolations(violations []Violation) string {

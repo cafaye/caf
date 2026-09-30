@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -11,11 +12,14 @@ import (
 // `INVALID <path>: <first error>`, and the exit code says whether the run
 // passed. A CI job reads this, so the lines are the product.
 func TestContractLintOutput(t *testing.T) {
-	dir := t.TempDir()
-	writeManifest(t, filepath.Join(dir, "cafaye.yml"), courierManifest)
-	writeManifest(t, filepath.Join(dir, "services", "billing", "cafaye.yml"), billingManifest)
-	writeManifest(t, filepath.Join(dir, "services", "broken", "cafaye.yml"), brokenManifest)
-	writeManifest(t, filepath.Join(dir, "node_modules", "dep", "cafaye.yml"), billingManifest)
+	valid := t.TempDir()
+	writeManifest(t, filepath.Join(valid, "cafaye.yml"), courierManifest)
+
+	tree := t.TempDir()
+	writeManifest(t, filepath.Join(tree, "cafaye.yml"), courierManifest)
+	writeManifest(t, filepath.Join(tree, "services", "billing", "cafaye.yml"), billingManifest)
+	writeManifest(t, filepath.Join(tree, "services", "broken", "cafaye.yml"), brokenManifest)
+	writeManifest(t, filepath.Join(tree, "node_modules", "dep", "cafaye.yml"), billingManifest)
 
 	tests := []struct {
 		name     string
@@ -27,39 +31,41 @@ func TestContractLintOutput(t *testing.T) {
 	}{
 		{
 			name:     "one valid manifest",
-			args:     []string{"contract", "lint", dir},
+			args:     []string{"contract", "lint", valid},
 			wantCode: exitSuccess,
-			wantOut:  []string{"OK " + filepath.Join(dir, "cafaye.yml")},
+			wantOut:  []string{"OK " + filepath.Join(valid, "cafaye.yml") + "\n"},
 		},
 		{
 			name:     "one invalid manifest",
-			args:     []string{"contract", "lint", filepath.Join(dir, "services", "billing", "cafaye.yml")},
+			args:     []string{"contract", "lint", filepath.Join(tree, "services", "billing", "cafaye.yml")},
 			wantCode: exitFailure,
 			wantOut: []string{
-				"INVALID " + filepath.Join(dir, "services", "billing", "cafaye.yml") +
-					`: name: "Billing_Service" does not match "^[a-z][a-z0-9]*(-[a-z0-9]+)*$"`,
+				"INVALID " + filepath.Join(tree, "services", "billing", "cafaye.yml") +
+					`: name: "Billing_Service" does not match "^[a-z][a-z0-9]*(-[a-z0-9]+)*$"` + "\n",
 			},
 		},
 		{
 			name:     "a tree reports one line per manifest, in path order",
-			args:     []string{"contract", "lint", dir},
+			args:     []string{"contract", "lint", tree},
 			wantCode: exitFailure,
 			wantOut: []string{
-				"OK " + filepath.Join(dir, "cafaye.yml"),
-				"INVALID " + filepath.Join(dir, "services", "billing", "cafaye.yml"),
-				"INVALID " + filepath.Join(dir, "services", "broken", "cafaye.yml"),
+				"OK " + filepath.Join(tree, "cafaye.yml") + "\n",
+				"INVALID " + filepath.Join(tree, "services", "billing", "cafaye.yml"),
+				"INVALID " + filepath.Join(tree, "services", "broken", "cafaye.yml"),
 			},
 			wantGone: []string{"node_modules"},
 		},
 		{
 			name:     "a manifest that is not YAML is invalid, not skipped",
-			args:     []string{"contract", "lint", filepath.Join(dir, "services", "broken", "cafaye.yml")},
+			args:     []string{"contract", "lint", filepath.Join(tree, "services", "broken", "cafaye.yml")},
 			wantCode: exitFailure,
-			wantOut:  []string{"INVALID " + filepath.Join(dir, "services", "broken", "cafaye.yml") + ": "},
+			// The position and the reason come from the YAML parser, so only
+			// the shape of the line is pinned here.
+			wantOut: []string{"INVALID " + filepath.Join(tree, "services", "broken", "cafaye.yml") + ": invalid YAML: [3:1]"},
 		},
 		{
 			name:     "a path that does not exist is a failure, not a pass",
-			args:     []string{"contract", "lint", filepath.Join(dir, "nope")},
+			args:     []string{"contract", "lint", filepath.Join(tree, "nope")},
 			wantCode: exitFailure,
 			wantErr:  "caf contract lint:",
 		},
@@ -79,8 +85,8 @@ func TestContractLintOutput(t *testing.T) {
 				t.Errorf("exit code = %d, want %d (stderr: %s)", code, tt.wantCode, stderr)
 			}
 			for _, want := range tt.wantOut {
-				if !strings.Contains(stdout, want+"\n") {
-					t.Errorf("stdout missing line %q\ngot:\n%s", want, stdout)
+				if !strings.Contains(stdout, want) {
+					t.Errorf("stdout missing %q\ngot:\n%s", want, stdout)
 				}
 			}
 			for _, gone := range tt.wantGone {
@@ -112,7 +118,15 @@ func TestContractLintPrintsOneLinePerManifest(t *testing.T) {
 	if len(lines) != 3 {
 		t.Fatalf("printed %d lines, want 3:\n%s", len(lines), stdout)
 	}
+	for _, line := range lines {
+		if !validLintLine.MatchString(line) {
+			t.Errorf("line %q is not `OK <path>` or `INVALID <path>: <first error>`", line)
+		}
+	}
 }
+
+// validLintLine is the whole output contract of `caf contract lint`.
+var validLintLine = regexp.MustCompile(`^(OK|INVALID) \S+(?:: \S.*)?$`)
 
 // The resolver prints the answer and the reason, because the reason is the
 // part a person can act on: a wrong version is a different fix from a wrong
@@ -165,6 +179,12 @@ func TestContractResolveOutput(t *testing.T) {
 			}
 			if stdout != tt.wantOut {
 				t.Errorf("stdout = %q, want %q", stdout, tt.wantOut)
+			}
+			// The line is the whole answer, so a failing resolve says nothing
+			// else: a CI log that shows the verdict twice is a log people learn
+			// to skim.
+			if stderr != "" {
+				t.Errorf("stderr = %q, want nothing: the answer is already on stdout", stderr)
 			}
 		})
 	}

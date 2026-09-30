@@ -92,15 +92,35 @@ func TestLookup(t *testing.T) {
 // printHelp must render the flags a command declares, otherwise a stub's flag
 // surface is invisible to the person using it.
 func TestPrintHelpRendersFlags(t *testing.T) {
+	c := lookupCommandOrFail(t, "new")
+
+	var out bytes.Buffer
+	printHelp(&out, c)
+
+	for _, want := range []string{"caf new", c.Summary, "Usage:", c.Usage, "-template"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("help missing %q\ngot:\n%s", want, out.String())
+		}
+	}
+}
+
+// Prose a command adds to its help is the only place a person can learn
+// something the usage line cannot say — the verb table, the constraint
+// grammar. Rendering it is not optional, and a command that declares no flags
+// must not grow an empty "Flags:" section.
+func TestPrintHelpRendersLongHelp(t *testing.T) {
 	c := lookupCommandOrFail(t, "contract")
 
 	var out bytes.Buffer
 	printHelp(&out, c)
 
-	for _, want := range []string{"caf contract", c.Summary, "Usage:", c.Usage, "-service", "-format"} {
+	for _, want := range []string{"caf contract", c.Summary, "Usage:", c.Usage, c.LongHelp, "contract lint", "contract resolve"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("help missing %q\ngot:\n%s", want, out.String())
 		}
+	}
+	if strings.Contains(out.String(), "Flags:") {
+		t.Errorf("help has a Flags section but %q declares no flags:\n%s", c.Name, out.String())
 	}
 }
 

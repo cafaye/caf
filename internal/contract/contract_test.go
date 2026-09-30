@@ -425,7 +425,7 @@ func TestVendoredSchemaIsPinned(t *testing.T) {
 
 	if got := hex.EncodeToString(sum[:]); got != manifestSchemaPin {
 		t.Errorf("vendored schema sha256 = %s, want %s\n"+
-			"the copy in internal/contract/schemas/manifest-0.1.json was edited by hand; "+
+			"the copy in internal/contract/schemas/manifest-0.2.json was edited by hand; "+
 			"refresh it with the procedure in schemas/README.md", got, manifestSchemaPin)
 	}
 }

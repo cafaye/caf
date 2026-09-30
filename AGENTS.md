@@ -17,7 +17,9 @@ cmd/caf/main.go     thin entrypoint: build a cli.Options, exit with its code
 internal/cli/       router, registry, one file per subcommand
 internal/contract/  the core contract: manifests, the vendored schema, versions
 internal/dev/       the local stack: the planner, the renderer, two seams
+internal/ci/        no code; the test that keeps .github/workflows/ci.yml honest
 bin/prime           the gate: go mod download && go build ./... && go test ./...
+.github/workflows/  ci.yml calls kit's shared workflow; two jobs carry what kit cannot know
 ```
 
 `internal/cli` is split by pipeline stage, the way `refs/goreleaser` splits
@@ -159,8 +161,19 @@ go vet ./...
 gofmt -l .         # must print nothing
 ```
 
-All four are required before a commit lands. `bin/prime` is the kit Go
-template; if kit changes it, follow kit.
+All three are required before a commit lands. `go vet` and `gofmt` are not in
+`bin/prime`; run all three.
+
+`bin/prime` is **not** kit's Go template and does not claim to be. It is
+cafaye's own three lines, and it is the gate CI runs, because a CI-only variant
+of a gate is worse than no gate: two commands that can disagree, one of them
+nobody runs locally, and a green badge that means the one nobody runs. Adopting
+kit's template is a decision, not a chore — it would add `go vet`, `-count=1`
+and a `--fast` flag, and each of those changes what a green `bin/prime` means.
+
+Coverage is 89.1% and the CI gate is 85% (`.github/workflows/ci.yml`). Both
+numbers move as code lands; raise the gate when the floor does, never the other
+way round.
 
 ## Adding a subcommand
 

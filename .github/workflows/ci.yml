@@ -1,0 +1,184 @@
+---
+# caf's CI. Two halves: kit's shared workflow, which owns the toolchain, and
+# three things only this repository can know.
+#
+# BLAST RADIUS — read this before making the `ci` job optional, skippable, or
+# continue-on-error.
+#
+# caf is not a service. It is the tool the rest of the fleet's CI shells out
+# to. `caf contract lint` validates a service manifest against the copy of
+# core's schema vendored in internal/contract, and pantry's own gate
+# (`bin/prime`, in ../pantry) ends in a block of `OK …` lines that this binary
+# prints — eight of them on master today, one per registered service. A broken
+# caf does not fail one repository; it fails every repository whose contract
+# check runs, and it fails them with a message that names a manifest rather than
+# a Go build error. That is the blast radius, and it is why the job below is
+# not optional.
+#
+# THE THING NOT TO ADD HERE. The obvious improvement to this file is a step
+# that clones the cafaye workspace and lints every sibling manifest. Do not.
+# It makes this workflow depend on private sibling repositories and on a deploy
+# key it has no business holding; it duplicates a check that belongs to pantry,
+# which owns the registry; and it undoes a deliberate property of kit's shared
+# workflow, which reaches no cafaye service and therefore needs no secrets. The
+# fleet-wide contract lint is a real gap and it is open as its own decision
+# rather than smuggled in here.
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  # So the first run can be triggered by hand on a branch, and so a red run is
+  # reproducible without waiting for the next push.
+  workflow_dispatch:
+
+# Nothing here pushes, publishes, or writes to a release. The release workflow
+# is a separate file so that a red test can never publish.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ------------------------------------------------------------------ shared
+  # kit's one workflow, called rather than copied, so a fix in kit lands here
+  # without a per-repository pull request.
+  #
+  # KNOWN RED ON ARRIVAL: the `lint` step of this job does not pass on master
+  # today. golangci-lint's default linter set finds 13 unchecked errors, all
+  # errcheck: six `fmt.Fprint`/`Fprintf` into a command's own output, three
+  # `tabwriter.Flush`, one `defer file.Close`, and three in test code. Reproduce
+  # with `golangci-lint run ./...` in a clone — this repository ships no
+  # `.golangci.yml`, so that is the default set, not kit's stricter one, which
+  # finds 24. `go vet ./...` and `bin/prime` are both clean. The two companion
+  # jobs below are green, and this job's build, `go test -race` and coverage gate
+  # are green, so the failure is named rather than inferred — but read the `ci`
+  # check as "builds, tests and covers", and treat its lint step as known-red.
+  # Fixing the 13 changes error handling in internal/cli and internal/dev, so it
+  # is its own packet and not a rider here.
+  ci:
+    name: 'ci (kit: go)'
+    uses: cafaye/kit/.github/workflows/ci.reusable.yml@master
+    with:
+      language: go
+      working-dir: .
+      # The one thing kit cannot read out of the tree. A call to a reusable
+      # workflow takes no steps, so this value is a literal and has to be
+      # written down; internal/ci asserts it against go.mod's `go` directive on
+      # every commit, so it cannot drift. Pinned to the minor rather than
+      # `stable`, because a suite that passes today must not depend on which
+      # image the runner had cached.
+      versions: '{"go":"1.25"}'
+      # Measured, not guessed. 89.1% on darwin; 88.2% on linux, the only
+      # platform divergence being 4 uncovered statements in
+      # doctor_probe_darwin.go against 18 uncovered ones in
+      # doctor_probe_linux.go, which is the whole of the `//go:build` surface in
+      # this tree. 85 is the floor of the two with room left, and it is not 0,
+      # because a threshold of 0 fails nothing and a gate that cannot fail is
+      # not a gate.
+      coverage-fail-under: '85'
+      # caf is a CLI. It serves no HTTP, holds no listener, and the tree has no
+      # reference to a traceparent or an OTel SDK, so the conformance job has
+      # no suite to run. Stated rather than defaulted, so that the day someone
+      # adds an HTTP surface they have to turn this on in the same diff that
+      # gives them something to propagate. 'false' is a STRING: kit compares
+      # `inputs.telemetry == 'true'`, and GitHub coerces the bare word false to
+      # a boolean in some positions, which makes `if: inputs.telemetry` a trap.
+      telemetry: 'false'
+
+  # -------------------------------------------------------------------- gate
+  # bin/prime, unmodified, and then the lockfile guard.
+  #
+  # Why this is a job here and not a step in kit's: kit's `go` job runs
+  # `go mod download`, `go build ./...` and `go test ./...` as three steps of
+  # its own. That is not the command a developer runs, and a CI-only variant of
+  # the gate is worse than no gate at all — two commands that can disagree, one
+  # of which nobody runs locally, and a green badge that means the one nobody
+  # runs. kit's only job that runs a repository's own command is `language:
+  # none`, which is hardcoded to `tests/validate.sh` and fails when that file is
+  # absent; caf's gate is `bin/prime` in a repository with a real manifest, so
+  # `none` is the wrong language as well as the wrong command.
+  gate:
+    name: 'gate (bin/prime)'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # `go-version-file` rather than a second literal, so this job's toolchain
+      # is read out of go.mod and cannot drift from the pin the shared job
+      # asserts. Same action and same major as kit's, deliberately, so the two
+      # cannot disagree about anything else either.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: the gate a developer runs
+        run: ./bin/prime
+      # go.sum is the lockfile and bin/prime's first step moves it. On a tree
+      # with no go.sum, `go mod download` writes only the three `/go.mod` hashes
+      # and `go build` then has to add the module hashes back; the committed
+      # file is a superset, and nothing in the gate notices. Verified against a
+      # cold module cache: the whole bin/prime sequence leaves go.mod and go.sum
+      # byte-identical, so this is a guard and not a tripwire. Both files, not
+      # just go.sum, because a go.mod that moved is the worse drift and costs
+      # the same two words.
+      - name: the gate left the lockfiles alone
+        run: git diff --exit-code -- go.mod go.sum
+
+  # ------------------------------------------------------- the gated test tier
+  # caf's suite has exactly one environment-gated test, and the environment that
+  # disables it is the one CI does not have: TestLintReportsAnUnreadableManifest
+  # skips itself when the process is root, because root reads a 0o000 file and
+  # the assertion would then be vacuous. A GitHub-hosted runner is uid 1001, so
+  # it runs — but "it runs because the runner is not root" is a claim about the
+  # runner, and a claim is not a check. This job makes the tier's execution
+  # visible in the log and fails if the environment ever turns it back into a
+  # skip, which is the difference between a tier and a comment about a tier.
+  #
+  # It cannot live in the shared workflow either: kit's go job runs `go test`
+  # without -v, so a skip prints nothing, and there is no input for "run this one
+  # test loudly". A separate job rather than a step in `gate` so the tier has a
+  # status of its own and a red `gate` cannot hide it. One extra runner is the
+  # price of a check that can fail.
+  root-gated:
+    name: 'unreadable-manifest test (needs a non-root runner)'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: install
+        run: go mod download
+      # Evidence, not an assertion about the runner image. If a future image
+      # runs the job as root, this fails here and says why, rather than the
+      # tier quietly disappearing one day later.
+      - name: the runner is not root
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "uid=$(id -u)"
+          if [ "$(id -u)" -eq 0 ]; then
+            echo "::error::running as root, so TestLintReportsAnUnreadableManifest would skip." >&2
+            echo "::error::a skipped test proves nothing (PLAN.md §1), so this job fails instead." >&2
+            exit 1
+          fi
+      - name: the tier ran, and did not skip
+        shell: bash
+        # pipefail, so the pipeline's exit code is go test's and not tee's. A
+        # gate whose exit code was not observed is treated as unrun, not green
+        # (PLAN.md §1).
+        run: |
+          set -euo pipefail
+          go test -count=1 -v -run '^TestLintReportsAnUnreadableManifest$' ./internal/contract/ | tee /tmp/tier.log
+          if grep -q -- '--- SKIP' /tmp/tier.log; then
+            echo "::error::the environment-gated tier skipped. A gate that skips is not green (PLAN.md §1)." >&2
+            exit 1
+          fi
+          if ! grep -q -- '--- PASS: TestLintReportsAnUnreadableManifest' /tmp/tier.log; then
+            echo "::error::no PASS line for the environment-gated tier; the run proved nothing about it." >&2
+            exit 1
+          fi

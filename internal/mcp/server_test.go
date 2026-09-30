@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -439,6 +440,103 @@ func TestServeHTTPAgreesWithARealClient(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("the tool reported an error over HTTP: %+v", res.Content)
 	}
+}
+
+// An unknown method is refused on the HTTP transport too, and the shape of that
+// refusal is not the same as on stdio — which is worth pinning rather than
+// leaving to be discovered.
+//
+// On stdio an unknown method comes back as a JSON-RPC -32601 frame. Over the
+// streamable HTTP transport the SDK checks the method before it reaches the
+// session, and for protocol versions before SEP-2575 (2026-07-28) that check
+// fails the HTTP request itself: 400 with a plain-text body, and no JSON-RPC
+// frame at all. That is the SDK following the transport spec rather than a gap
+// in caf, and it is still an answer — a client is told its method is unknown
+// rather than left waiting — but a client written against the stdio behaviour
+// will not find the -32601 it expects. So it is asserted here, and the report
+// says which transport gives which.
+func TestAnUnknownMethodOverHTTPIsRefused(t *testing.T) {
+	server := New(Options{Version: "1.2.3", Logger: testLogger()})
+	Add(server, Tool[pingIn, pingOut]{
+		Name: "caf_ping", Description: "Greet somebody. Does not greet anyone else.", ReadOnly: true, Input: pingIn{}, Handler: greet,
+	})
+
+	addr, stop := serveHTTP(t, server)
+	defer stop()
+
+	// The handshake first: a request before initialization is refused for a
+	// different reason, and this test is about the method and not about that.
+	sessionID := httpInitialize(t, addr)
+
+	response := post(t, addr, sessionID, `{"jsonrpc":"2.0","id":2,"method":"tools/definitelyNotAMethod","params":{}}`)
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusBadRequest && response.StatusCode != http.StatusNotFound {
+		t.Errorf("an unknown method over HTTP returned %d, want it refused", response.StatusCode)
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read the response: %v", err)
+	}
+	if !strings.Contains(string(body), "definitelyNotAMethod") {
+		t.Errorf("the refusal does not name the method that was refused:\n%s", body)
+	}
+}
+
+// httpInitialize performs the handshake over HTTP and returns the session id,
+// because every later request needs it. It uses a pre-SEP-2575 protocol
+// version, which is what a client in the wild sends.
+func httpInitialize(t *testing.T, addr string) string {
+	t.Helper()
+	response := post(t, addr, "", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":`+
+		`{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"c","version":"1"}}}`)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("initialize over HTTP returned %d", response.StatusCode)
+	}
+	id := response.Header.Get("Mcp-Session-Id")
+	if id == "" {
+		t.Fatal("initialize returned no session id, so no later request could be a real client")
+	}
+	if err := drain(response.Body); err != nil {
+		t.Fatalf("read the initialize response: %v", err)
+	}
+
+	// The initialized notification is what moves the session out of
+	// initialization, and it is answered with an empty 202 rather than a body.
+	note := post(t, addr, id, `{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`)
+	if err := drain(note.Body); err != nil {
+		t.Fatalf("read the notification response: %v", err)
+	}
+	note.Body.Close()
+	return id
+}
+
+// post sends one JSON-RPC request the way the streamable transport expects:
+// a POST of a JSON body with an Accept header naming both response types.
+func post(t *testing.T, addr, sessionID, body string) *http.Response {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodPost, "http://"+addr+"/", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json, text/event-stream")
+	if sessionID != "" {
+		request.Header.Set("Mcp-Session-Id", sessionID)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("POST %s: %v", body, err)
+	}
+	return response
+}
+
+// drain reads a response body to the end, which is what lets the connection be
+// reused and, more importantly, is what the SDK's handler is waiting for.
+func drain(body io.Reader) error {
+	_, err := io.ReadAll(body)
+	return err
 }
 
 // Names is the served table in registration order, which is the order a reader

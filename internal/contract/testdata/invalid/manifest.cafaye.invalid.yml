@@ -1,0 +1,27 @@
+# EXPECTED FAILURE — rejected by schemas/cafaye.manifest.schema.json.
+# See examples/invalid/README.md for the full list of expected violations.
+#   name           -> pattern   (uppercase + underscore, not a cafaye namespace name)
+#   language       -> enum      (python3 is not a cafaye language)
+#   core           -> pattern   (constraint is missing the patch version)
+#   repository.url -> pattern   (https remote; cafaye remotes are SSH, PLAN.md §1)
+#   ports          -> additionalProperties (undeclared top-level key)
+name: Billing_Service
+description: A manifest with the mistakes a service actually ships with.
+language: python3
+core: ^0.1
+
+exposes:
+  api: ./openapi.yaml
+  events:
+    - user.Created
+
+repository:
+  url: https://github.com/cafaye/billing-service
+  defaultBranch: main
+  visibility: public
+
+owner:
+  team: billing
+
+ports:
+  - 8080

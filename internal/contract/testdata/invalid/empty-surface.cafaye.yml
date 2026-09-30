@@ -1,0 +1,25 @@
+# EXPECTED FAILURE — the JSON Schema accepts this file (exposes has a key, so
+# minProperties is satisfied, and an empty events array breaks nothing); the
+# caf cross-field rules in docs/manifest-conventions.md do not.
+#
+# Rule: a repository that declares a contract surface must actually declare
+# one. `exposes: {events: []}` serves nobody and routes nowhere: there is no
+# OpenAPI document for `caf dev` to serve and no event for `guard` to route.
+# A repository with no `exposes` at all is a library or a spec repo, which is
+# a different and legal thing.
+name: courier
+description: A worker that claims a contract surface and declares none.
+language: elixir
+core: ^0.1.0
+
+exposes:
+  events: []
+
+repository:
+  url: git@github.com:cafaye/courier.git
+  defaultBranch: master
+  visibility: public
+
+owner:
+  team: courier
+  contact: courier@cafaye.com

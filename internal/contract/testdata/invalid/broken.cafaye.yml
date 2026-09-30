@@ -1,0 +1,20 @@
+# EXPECTED FAILURE — not even YAML. A tab indent is what a shell heredoc and a
+# careless editor produce, and a manifest that cannot be parsed must be
+# reported as invalid rather than skipped.
+name: courier
+description: A manifest with a tab-indented block.
+language: elixir
+core: ^0.1.0
+
+exposes:
+	events:
+    - email.queued
+
+repository:
+  url: git@github.com:cafaye/courier.git
+  defaultBranch: master
+  visibility: public
+
+owner:
+  team: courier
+  contact: courier@cafaye.com

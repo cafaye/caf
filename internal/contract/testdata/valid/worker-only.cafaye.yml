@@ -1,0 +1,24 @@
+# cafaye.yml — darkroom: a pure worker. Nothing exposed, only consumed.
+# `exposes` is omitted entirely: the service has no contract surface of its own.
+name: darkroom
+description: Media uploads, variants and the S3 processing pipeline.
+language: rust
+core: 0.1.0
+
+consumes:
+  - account.created
+  - member.role_changed
+
+dependencies:
+  - name: identity
+    version: ^0.1.0
+    required: true
+
+repository:
+  url: git@github.com:cafaye/darkroom.git
+  defaultBranch: master
+  visibility: public
+
+owner:
+  team: darkroom
+  contact: darkroom@cafaye.com

@@ -1,0 +1,25 @@
+# EXPECTED FAILURE — the JSON Schema accepts this file; the caf cross-field
+# rules in docs/manifest-conventions.md do not.
+#
+# Rule: a published long-form event type (<service>.<entity>.<action>) must
+# start with the publisher's own name. `identity.api_key.created` is legal in
+# identity and a bug anywhere else — it forks the topic away from the
+# publisher's own subscription.
+name: billing
+description: A manifest that publishes another service's long-form event.
+language: ruby
+core: ^0.1.0
+
+exposes:
+  events:
+    - invoice.created
+    - identity.api_key.created
+
+repository:
+  url: git@github.com:cafaye/billing.git
+  defaultBranch: master
+  visibility: public
+
+owner:
+  team: billing
+  contact: billing@cafaye.com

@@ -15,8 +15,8 @@ All notable changes to caf are recorded here. The format follows
   any manifest is invalid, or if the path holds none at all.
 - `caf contract resolve <constraint> <version>` — resolves a core version
   constraint (`1.2.3`, `^1.2.3`, `~1.2.3`, `>=1.2.3`) against a version and
-  prints the answer with the reason: `yes  ^0.1.0 allows 0.1.3: 0.1.3 is in
-  [0.1.0, 0.2.0)`. Exits 0 inside the range, 1 outside, 2 on input it cannot
+  prints the answer with the reason: `yes  ^0.2.0 allows 0.2.3: 0.2.3 is in
+  [0.2.0, 0.3.0)`. Exits 0 inside the range, 1 outside, 2 on input it cannot
   read, so a CI job can gate on it.
 - `internal/contract`, the one place the contract is enforced: manifest
   loading, schema validation, the cross-field rules, and version resolution.

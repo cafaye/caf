@@ -278,6 +278,31 @@ All notable changes to caf are recorded here. The format follows
   injected, so the test that exercises the timeout took as long as the timeout it
   was testing — sixty seconds to prove a second. Both the clock and the sleep
   are seams now, and so is the teardown's.
+- **Two wall-clock assertions that were measuring the machine, not the code.**
+  No shipped behaviour changes here; both were test gates that went red under
+  load while the code they covered was correct throughout, which is worse than a
+  flake because a gate that cannot be trusted is not a gate.
+  - `internal/cli`'s `a server that has exited is reported as exited` closed the
+    child's stdin and then handed the read a **250ms** budget, asserting on
+    whichever branch of the `select` won the race. The child exiting is an event
+    you can block on, so it blocks on it: the exit is now waited for, and the
+    deadline that remains is a backstop that names the event rather than the
+    mechanism. The old form failed **12 of 12 runs** under load. Raising the
+    budget to 1000ms was rejected — it does not fix the shape, it makes the head
+    rarer. The sibling case, *a server that is up and says nothing times out as
+    silent*, legitimately is a deadline, because silence has no signal; it is
+    untouched and still passes.
+  - `internal/ryuk`'s live test gated reaper readiness on **a TCP connect** to
+    the published port. Docker's port-forward proxy accepts before anything is
+    listening inside the container, so the connect succeeded and the handshake
+    read EOF — a **16ms** window, 3 failures in 18 runs. Readiness is now the
+    reaper acknowledging a filter, retried as a whole `Dial`, and the proof is a
+    listener that opens and closes connections on cue, so it is in the gate
+    rather than behind `CAF_LIVE_RYUK`.
+
+  The rule that comes out of both, now in `AGENTS.md`: *a deadline is right when
+  the absence of the event is the assertion, and wrong when the event could
+  simply be waited for.*
 
 ### Changed
 

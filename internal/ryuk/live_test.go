@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -117,11 +116,15 @@ func TestAClosedLeaseReapsAndAnOpenOneDoesNot(t *testing.T) {
 		"testcontainers/ryuk:0.8.1"); err != nil {
 		t.Fatalf("the reaper: %v\n%s", err, out)
 	}
-	address := waitForReaper(ctx, t, fmt.Sprintf("127.0.0.1:%d", reaperPort))
-
 	// The lease, held. While this is open the reaper has a client and prunes
 	// nothing.
-	client, err := Dial(ctx, ConfigWithSession(address, session), filter)
+	//
+	// Waiting for the reaper is takeLease's job and not a connect's: the
+	// published port answers before the container behind it is listening, and a
+	// connect there says nothing about whether a reaper is there. See
+	// readiness_test.go, which proves that against a listener that opens and
+	// closes connections on cue, with no Docker involved.
+	client, err := takeLease(ctx, fmt.Sprintf("127.0.0.1:%d", reaperPort), session, filter)
 	if err != nil {
 		t.Fatalf("taking the lease: %v", err)
 	}
@@ -205,23 +208,6 @@ func waitGone(ctx context.Context, d *liveRuntime, name string, within time.Dura
 		}
 		if time.Now().After(deadline) {
 			return false
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-}
-
-// waitForReaper polls the reaper's port to a deadline, for the same reason.
-func waitForReaper(ctx context.Context, t *testing.T, address string) string {
-	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		conn, err := net.DialTimeout("tcp", address, time.Second)
-		if err == nil {
-			_ = conn.Close()
-			return address
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the reaper never answered at %s: %v", address, err)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}

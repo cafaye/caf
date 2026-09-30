@@ -282,6 +282,43 @@ func (s *wireSession) next() wireFrame {
 	return frame
 }
 
+// awaitExit reports whether the child exited before the budget ran out. It is
+// the event, not a clock: the only thing that ends the wait is cmd.Wait()
+// returning and the channel closing.
+func (s *wireSession) awaitExit(within time.Duration) bool {
+	select {
+	case <-s.exited:
+		return true
+	case <-time.After(within):
+		return false
+	}
+}
+
+// waitForExit blocks until the child has exited, and fails the test if it has
+// not by the end of the deadline.
+//
+// It exists because a 250ms wall-clock budget was standing in for this event,
+// and a wall-clock budget is a measurement of the machine rather than of the
+// code. Measured on a loaded machine, the cold first spawn of `caf mcp` was
+// observed exiting in 476ms — nearly twice the budget — while the median was
+// 13ms. So the budget was generous on a good day and a coin flip on a bad one,
+// and the assertion it carried ("the harness reports an exit as an exit") is
+// true regardless of how fast the kernel gets round to it. Raised to 1000ms it
+// would still be a coin flip on a worse day, only with a rarer head: the shape
+// of the bug is the dependency, not the number.
+//
+// The deadline left here is a backstop against a hang and nothing else, and it
+// says which event never arrived so that a reader is not left guessing. It is
+// the same generous wireTimeout every other read in this file uses, and on the
+// path it guards, nothing waits for it to elapse.
+func (s *wireSession) waitForExit(t *testing.T) {
+	t.Helper()
+	if !s.awaitExit(wireTimeout) {
+		t.Fatalf("caf mcp did not exit within %s of its stdin being closed, and a server is entitled to exit when its client hangs up; stderr: %s",
+			wireTimeout, s.stderr.String())
+	}
+}
+
 // send writes one frame verbatim, so a test can send something no well-behaved
 // client would — an unknown method, an unknown tool — which is the only way to
 // test what the server does with them.
@@ -752,8 +789,20 @@ func TestTheHarnessTellsAnExitedServerFromASilentOne(t *testing.T) {
 		if err := session.stdin.Close(); err != nil {
 			t.Fatal(err)
 		}
-		session.stopped = true
-		session.timeout = 250 * time.Millisecond
+
+		// Wait for the exit itself. This used to hand nextFrame a 250ms
+		// budget and assert on whichever branch won the race, which meant a
+		// server that had already exited was reported as "running and said
+		// nothing" whenever the machine was too loaded to schedule the child
+		// inside 250ms — 12 of 12 runs red under load, for a harness that was
+		// behaving correctly the whole time.
+		//
+		// Blocking on the event is not only more honest, it is also
+		// deterministic: once exited is closed, the only two branches
+		// nextFrame can take are the two that both report errServerExited,
+		// so the assertion below no longer depends on how long the process
+		// took to go.
+		session.waitForExit(t)
 
 		_, err := session.nextFrame()
 

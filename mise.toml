@@ -1,0 +1,15 @@
+# Toolchain pins for this repository. caf is a single Go binary with no other
+# runtime dependency, so the go pin is the whole file.
+#
+#   mise install    # install the pinned toolchain
+#   mise run prime  # the gate
+[tools]
+go = "1.25"
+
+[tasks.prime]
+description = "The gate: download, build, test"
+run = "./bin/prime"
+
+[tasks.doctor]
+description = "Build caf and report the local toolchains"
+run = "go run ./cmd/caf doctor"

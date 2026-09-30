@@ -186,3 +186,28 @@ func TestRunFillsInUnsetVersion(t *testing.T) {
 		t.Errorf("stdout = %q, want %q", stdout, want)
 	}
 }
+
+// A caller that only wants an exit code may pass no streams at all. A nil
+// writer is discarded rather than dereferenced, so the router writes its
+// output nowhere instead of panicking.
+func TestRunWithNoStreams(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want int
+	}{
+		{name: "help prints nowhere and succeeds", args: []string{"help"}, want: 0},
+		{name: "version prints nowhere and succeeds", args: []string{"version"}, want: 0},
+		{name: "doctor prints nowhere and succeeds", args: []string{"doctor"}, want: 0},
+		{name: "a stub reports nowhere and fails", args: []string{"init"}, want: exitFailure},
+		{name: "a usage error reports nowhere and exits 2", args: []string{"nope"}, want: exitUsage},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if code := Run(Options{Version: testVersion, Args: tt.args}); code != tt.want {
+				t.Errorf("exit code = %d, want %d", code, tt.want)
+			}
+		})
+	}
+}

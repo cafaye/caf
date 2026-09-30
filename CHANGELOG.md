@@ -35,3 +35,9 @@ are `version` and `doctor`.
   ./...`), `mise.toml` pinning Go 1.25, and a build-only `.goreleaser.yml` with
   no package managers yet.
 - `cafaye.yml` as a clearly marked manifest draft, pending the core schema.
+- `internal/cli/stub_test.go`: the `stubCommands` table, one row per stub with
+  its argument count and flags. It is the single source of truth for which
+  subcommands are still stubs: each one is pinned to return
+  `errNotImplemented` with exit code 1, to reject a bad argument count as a
+  usage error, and to accept the flags it declares. A subcommand moves out of
+  the table when its real behavior lands.

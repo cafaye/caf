@@ -70,10 +70,12 @@ func Commands() []*Command {
 		newDeployCommand(),
 		newDevCommand(defaultDevDeps()),
 		newDoctorCommand(),
+		newEnvCommand(),
 		newGenCommand(),
 		newInitCommand(),
 		newMCPCommand(),
 		newNewCommand(),
+		newReclaimCommand(reclaimDeps{}),
 		newVersionCommand(),
 	}
 }

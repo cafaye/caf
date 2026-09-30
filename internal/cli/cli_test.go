@@ -201,7 +201,13 @@ func TestRunWithNoStreams(t *testing.T) {
 	}{
 		{name: "help prints nowhere and succeeds", args: []string{"help"}, want: 0},
 		{name: "version prints nowhere and succeeds", args: []string{"version"}, want: 0},
-		{name: "doctor prints nowhere and succeeds", args: []string{"doctor"}, want: 0},
+		// doctor exits 0 or 1 depending on the machine it found, and this test
+		// runs in internal/cli, which is not a project — so the plan check
+		// fails and the exit code is 1. The point of the case is that a nil
+		// writer is discarded rather than dereferenced, and that holds for
+		// either verdict, so the assertion is that it did not panic and that
+		// the code is one of the two a report can produce.
+		{name: "doctor prints nowhere and does not panic", args: []string{"doctor"}, want: exitFailure},
 		{name: "a stub reports nowhere and fails", args: []string{"init"}, want: exitFailure},
 		{name: "a usage error reports nowhere and exits 2", args: []string{"nope"}, want: exitUsage},
 	}

@@ -44,6 +44,13 @@ type Options struct {
 	// HostPort overrides the host end of the project service's published port.
 	// The container port is a property of the image and is never rewritten.
 	HostPort int
+	// PortAllocator decides the host end of a publishing service's port. It is
+	// how `caf env up` hands the stack ports it reserved from 15000-15999 and
+	// held for the life of the session, and it is nil for `caf dev`, which takes
+	// the service's own port. It is a field rather than a global so the planner
+	// stays pure: a reservation is a fact about the machine, and Plan is not
+	// allowed to know about machines.
+	PortAllocator PortAllocator
 	// NoInfra leaves out the local postgres and redis. The default is to
 	// include them, which is why this is a negative: a caller that never heard
 	// of the option should get a stack a developer can actually work in.
@@ -243,6 +250,12 @@ type resolver struct {
 	// fact that turns the whole plan empty, so it is resolved once here rather
 	// than asked about again at every step.
 	runnable bool
+	// allocErr is why the walk stopped. addProject is called from collect, which
+	// is a pure function of the manifest and the registry, so the one thing that
+	// can fail from outside — a port allocator that has nothing left to give —
+	// is carried out of the walk on the resolver rather than in a return value
+	// on every step.
+	allocErr error
 
 	services map[string]Service
 	seen     map[string]bool
@@ -267,6 +280,9 @@ func (r *resolver) collect() ([]Service, error) {
 	// rendering a second copy of the same image under a different origin.
 	if err := r.addProject(root); err != nil {
 		return nil, err
+	}
+	if r.allocErr != nil {
+		return nil, r.allocErr
 	}
 	if err := r.walk(root); err != nil {
 		return nil, err
@@ -423,6 +439,16 @@ func (r *resolver) addProject(name string) error {
 	}
 	if r.opts.HostPort > 0 {
 		svc.Published = r.opts.HostPort
+	} else if svc.Published > 0 && r.opts.PortAllocator != nil {
+		// The allocator owns the host end, and it owns it for a reason: it holds
+		// the port. An explicit -port is the developer's decision and wins,
+		// because caf checks a port it was given rather than moving it.
+		port, err := r.opts.PortAllocator(name)
+		if err != nil {
+			r.allocErr = fmt.Errorf("%w: %w", ErrPortConflict, err)
+			return r.allocErr
+		}
+		svc.Published = port
 	}
 	r.services[name] = svc
 	return nil

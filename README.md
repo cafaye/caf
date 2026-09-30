@@ -40,7 +40,9 @@ go build ./cmd/caf
 | `caf contract resolve <c> <v>` | resolve a core version constraint | **works** |
 | `caf mcp` | serve the cafaye tools over the Model Context Protocol | **works** |
 | `caf version` | print the caf version | **works** |
-| `caf doctor [path]` | report the toolchains, and whether this machine can run this project | **works** |
+| `caf doctor [path]` | report the toolchains, whether this machine can run this project, and what is unreclaimed | **works** |
+| `caf reclaim` | reclaim what a caf session left behind, containers before volumes | **works** |
+| `caf env up <tier> -- <cmd>` | provision the stack, run a command against it, and reclaim it when the command is done | **works** |
 
 `flags only` means the flags parse, the argument count is checked, and the
 command returns a `not implemented in v0` error with exit code 1. `caf help
@@ -57,8 +59,10 @@ as `<command> --help`.
 | 1 | the command ran and failed |
 | 2 | caf was invoked wrongly: unknown command or flag, wrong argument count |
 
-`doctor` always exits 0. It is a report about a machine, not a gate.
-`contract lint` and `contract resolve` print their verdict on stdout and say
+`caf doctor` exits 0 unless some row is `fail`, then 1; a `warn` never moves it.
+It used to always exit 0, and that is a change — see [`caf doctor`](#caf-doctor).
+`caf env up` passes its child's exit code through, so a CI job running a suite
+through it cannot read 0 out of a red run. `contract lint` and `contract resolve` print their verdict on stdout and say
 nothing on stderr, so a CI log shows the answer once. `caf dev` does the same for
 a stack that came up with something in it that did not: the report is the
 message, and it is not repeated on stderr.
@@ -335,8 +339,9 @@ job a TUI would have had here.
 
 ## `caf doctor`
 
-`caf doctor` answers two questions, and the second one is the reason the command
-is worth running at all.
+`caf doctor` answers three questions. The first is unchanged; the second is why
+the command is worth running at all; the third is the one that makes cleanup
+something the tool reminds you about rather than something you remember.
 
 **Which toolchains does this machine have?** The tool table, unchanged: binaries
 resolved on `PATH`, the path of the one that answered, nothing executed.
@@ -357,42 +362,211 @@ rust            ok      /Users/kaka/.cargo/bin/rustc
 checked 10 tools, 10 ok, 0 missing
 ```
 
-**Can this machine run this project?** The environment table, which the first
-one cannot answer:
+**Can this machine run this project?** And **what has it not reclaimed?**
 
 ```
 $ caf doctor -registry catalog.json ./hello
-project /work/hello: hello (go), 4 services in hello-dev
-check              status  detail
-container runtime  ok      /usr/local/bin/docker
-runtime running    ok      server 29.4.0
-memory             ok      16 GiB, need 4 GiB
-cpu                ok      8, need 4
-port 3000          free    -
-port 8080          free    -
-toolchain go       ok      /Users/kaka/.local/share/mise/shims/go
-checked 7 project checks, 7 ok
+check      state  detail                  fix
+toolchain  ok     10 of 10 tools present  -
+1 state check(s): 1 ok, 0 warn, 0 fail
+
+project /work/hello
+check    state  detail                        fix
+runtime  ok     server 29.4.0                 -
+machine  ok     16 GiB and 8 CPUs             -
+ports    warn   free, but published outside caf's block 15000-15999: 8080; a parallel worker cannot see these and will not avoid them   caf env up go -- <command>   # reserves from 15000-15999 and holds them for the session
+plan     ok     4 services in hello-dev       -
+4 state check(s): 2 ok, 1 warn, 0 fail
+
+reclamation
+check        state  detail                                       fix
+reclaimable  warn   1 entr(ies) in /Users/k/.local/state/caf/ledger nothing has reclaimed: 1 stack(s), 1 port reservation(s), oldest 2 days ago   caf reclaim          # a dry run; add -yes to remove
+port block   ok     nothing is holding a port in 15000-15999     -
+2 state check(s): 1 ok, 1 warn, 0 fail
+
+this machine can run this project, with the warnings above; none of them stop it
 ```
 
-Three things the tool table above cannot see, and this one can:
+### ok, warn, fail
+
+Every check is one of three words, and the middle one is the load-bearing one.
+A boolean check forces a choice between failing on warnings — noisy, and the
+first thing a team disables — and ignoring them, which makes the report a
+decoration. So there are three states, and `warn` moves nothing:
+
+| state | meaning | exit code |
+|---|---|---|
+| `ok` | the machine is fine | 0 |
+| `warn` | it works, and here is the thing worth knowing | 0 |
+| `fail` | it cannot do what was asked, and here is the command | 1 |
+
+**This is a change from caf 0.x, where `doctor` always exited 0.** It is the one
+behaviour change in this section and `caf help doctor` says so too.
+
+Severity is reasoned per *fact*, not per check, because one check can fail in
+ways of different importance: a ledger with one unreclaimed stack is worth
+mentioning, and a ledger that cannot be read means nothing can be reclaimed at
+all. `tilt` missing is a `warn` — most people do not use it — and the container
+runtime missing is a `fail`, because nothing can start. Every fact a check can
+fail on is in one table in `internal/cli/doctor_check.go`, and a test asserts
+that table is complete: a fact that is not in it takes a default nobody reasoned
+about.
+
+Every row that is not `ok` carries the exact command that fixes it.
+
+### What the project section can see that the tool table cannot
 
 - **A container runtime that is installed and not answering.** `docker --version`
   succeeds either way, so the tool table says `ok` while nothing can be started.
-  `runtime running` asks the *server*, not the binary.
-- **A machine with too little of something.** 4 GiB of memory and 4 CPUs are the
-  floor for a database, a cache and a service at once. A machine reports every
-  toolchain it needs and still cannot run a stack.
-- **A port the stack needs and something else already holds.** The ports come
-  from the same plan `caf dev` would build, not from a list written here, so the
-  two cannot drift into a check that passes while the stack cannot start.
+  The `runtime` check asks the *server*, and tells the two failures apart, because
+  they have different fixes.
+- **A machine with too little of something**, and a machine that would not say.
+  4 GiB and 4 CPUs are the floor for a database, a cache and a service at once. A
+  machine that will not report its memory is a `warn`, not a `fail`: reporting
+  zero as "too little" is a false alarm about a machine that is probably fine,
+  and an alarm people learn to ignore is worse than no alarm.
+- **A port the stack needs and something else already holds.** The ports come from
+  the same plan `caf dev` would build, not from a list written here, so the two
+  cannot drift into a check that passes while the stack cannot start. A port
+  published *outside* 15000-15999 is a `warn` with a reason: it works, and no
+  sibling worker on the machine can see it.
+- **A `spec` repository** — core, and the contract fixtures — ships no process, so
+  there is no stack and no port. It is reported as such rather than asked about.
 
-`toolchain <x>` comes from the `language` field in the manifest, so a Ruby
-project is told about Ruby whatever the machine happens to have. A `spec`
-repository — core, and the contract fixtures — needs no toolchain and no port, and
-is not asked about either.
+### What the reclamation section is for
 
-`-tools-only` prints the first table alone, for anything that was already reading
-it. `doctor` always exits 0: it is a report about a machine, not a gate.
+- **Is there anything unreclaimed?** Every stack `caf dev` brought up is written
+  to a ledger before the resource is created, so a caf killed mid-run leaves a row
+  naming something that still exists. This check says so, with the age, and the
+  fix is `caf reclaim`.
+- **Is something in caf's port block that is not ours?** caf publishes from
+  15000-15999 so that every worker on a machine can see which ports are ours. A
+  stranger in that range is not an error — the stranger may be entitled to it —
+  but it is exactly what produces the silent collision, and the check names the
+  command that says who.
+
+`-tools-only` prints the tool table alone, for anything that was already reading
+it.
+
+### The meta-test
+
+`internal/cli/doctor_severity_test.go` walks the check registry and, for every
+registered check, requires a row in a table naming the machine state that drives
+it to each of the three severities — then runs that table against a real machine
+through the real report and asserts the state and the exit code. A check added
+without its rows fails by name.
+
+That is a gate over the tests, and it exists because of a measured failure: a
+hand-written `doctor` in this fleet had a red test for seven of its ten checks,
+three shipped with only a green one, and nothing structurally prevented it. The
+rule this enforces is that a check which cannot be driven red in a hermetic test
+does not ship.
+
+## `caf reclaim`
+
+`caf reclaim` is the command that makes cleanup something the tool does rather
+than something a person remembers. It reads the ledger and removes what the
+ledger accounts for.
+
+```
+$ caf reclaim
+ledger /Users/k/.local/state/caf/ledger: 1 entr(ies)
+resource                         kind       outcome   detail  command
+identity-worker-1-g1-postgres-1  container  :dropped  -       docker rm -f identity-worker-1-g1-postgres-1
+identity-worker-1-g1_pgdata      volume     :dropped  -       docker volume rm identity-worker-1-g1_pgdata
+
+dry run: 2 resource(s) in 1 ledger entr(ies), 1 container(s), 1 volume(s); nothing was removed and no entry was released
+
+nothing was removed. Re-run with -yes to do it.
+```
+
+**It is a dry run unless you pass `-yes`.** The plan is printed in full, one row
+per resource, with the exact command that would remove it.
+
+**Containers go before volumes, always.** Docker will not remove a volume a
+container still references, so a single leaked *stopped* container pins its named
+volume forever. That is the measured mechanism behind the volume leak in this
+fleet — not a broken pruner, but an orphan holding a volume nothing could
+reclaim. A sweep that prunes volumes first reclaims nothing and says it did, so
+the sweep removes the containers, re-lists the volumes, and only then removes
+them.
+
+**Each row ends in one of three words, and they are different answers:**
+
+| word | meaning | entry |
+|---|---|---|
+| `:dropped` | it was there and is gone | released |
+| `:missing` | it was not there | released |
+| `:failed` | it was there and could not be removed | **kept** |
+
+Only `:failed` keeps the ledger entry, because the entry is the only handle to a
+resource that still exists. A sweep that cannot see the daemon is a failure, not
+an empty report — "reclaimed 0 things" because nothing was listening is how a
+sweeper becomes a thing people stop running. The command exits 1 when something
+was `:failed`, so a script can tell a clean sweep from a broken one.
+
+**It never runs a blanket prune.** Every call is scoped by the compose project
+label, which carries the ledger's generation, and a resource whose name does not
+carry that generation is *refused and reported* rather than removed. `searxng-*`,
+the kamal buildkit volume, and any volume with no cafaye worker name are not
+reachable from here at all.
+
+A reservation whose holder is gone is reclaimed; one held by a live session is
+left completely alone and counted, so that "released nothing" is not read as
+"found nothing".
+
+Flags: `-yes`, `-ledger <dir>`, `-generation <n>`.
+
+## `caf env up`
+
+```
+caf env up [flags] <tier> -- <command> [arguments]
+```
+
+`caf env up` is the only provisioning verb. It writes the stack to the ledger
+before creating it, reserves the host ports it will publish from 15000-15999 and
+**holds** them for the life of the session, brings the stack up, runs `<command>`
+as its **child**, and takes the stack down and releases the entry when the child
+is gone.
+
+```
+$ caf env up go -- go test ./...
+starting 3 services in identity-dev
+tier         go
+session      d45866fe7141f6eaa31f8e83142f5de5
+generation   1
+worktree     /work/identity
+project      identity-dev
+ports        15020
+databases    identity-dev_pgdata,identity-dev_redisdata
+ledger       /Users/k/.local/state/caf/ledger
+tier policy  unimplemented: MD12 owns the tier policy; this command records the tier and enforces nothing
+...
+$ echo $?
+0
+```
+
+Four things this is and is not:
+
+- **It is the parent, not a sibling.** A sibling that exits leaves the stack up
+  and the cleanup to memory. A parent that is interrupted has the kernel take the
+  whole group down. That is what makes cleanup guaranteed rather than remembered,
+  and it is why there is no separate "stop" verb to remember.
+- **The child's exit code is the command's exit code.** A CI job that read 0 out
+  of a red suite would be a green badge for a red run, which is the specific thing
+  this command exists to make impossible.
+- **The tier is recorded, not enforced.** MD12 owns the tier policy and it is owed
+  as its own decision. A tier policy this command could apply on its own would be a
+  weak gate, and a pass-able gate is worse than no gate — so the receipt says which
+  tier ran and says plainly that the policy is not here.
+- **The receipt is the seam a gate will read.** A machine-readable statement of the
+  session, generation, worktree, project, ports and named volumes, on one
+  `CAF_RECEIPT=` line. It never carries a value from the stack's own environment:
+  a receipt is read by CI, pasted into a bug, and printed to a log.
+
+`-port` inside the block is honoured — caf holds the port you typed rather than
+replacing it. Outside the block it is refused, by name, because a port nobody
+arbitrates is how 21101 and 55432 happened.
 
 ## `caf contract lint`
 
@@ -473,6 +647,10 @@ internal/cli/       the router, the registry, one file per subcommand
 internal/contract/  manifest loading, schema validation, version resolution
 internal/dev/       the local stack: planning, rendering, the two seams
 internal/mcp/       the MCP server: transports, the served table, the seam
+internal/ledger/    the reclamation ledger: what caf created, so cleanup is not memory
+internal/ports/     the port block, the reservation that holds a port, the prober
+internal/reclaim/   the sweep's container-runtime seam, scoped to one project
+internal/ryuk/      the reaper lease client, for testcontainers' Ryuk
 ```
 
 `internal/dev` is the only place that knows what a local stack is. `Plan` is a
@@ -480,8 +658,9 @@ pure function from a manifest and a registry to a rendered compose document and
 a start order — it reads no file, opens no socket and runs no command, which is
 why the interesting behaviour of `caf dev` is covered by tests that start
 nothing at all. Everything that does touch the world sits behind one of two
-seams there: `Registry` (how a service is run locally, which pantry owns) and
-`Runtime` (the container runtime, three calls wide).
+seams there: `Registry` (how a service is run locally, which pantry owns),
+`Runtime` (the container runtime, three calls wide) and `PortAllocator` (which host
+port a publishing service gets, which only `caf env up` fills in).
 
 The split follows the pipeline-stage pattern: the router knows nothing about
 any subcommand, and each subcommand owns its flags, help and run function, so
@@ -500,6 +679,16 @@ library cannot do:
 
 There is no CLI framework: routing is hand-rolled on the standard `flag`
 package.
+
+The four packages above `internal/dev` are the reclamation half, and they are
+separate for one reason: the decisions — what was created, which port belongs to
+whom, what a sweep may touch — must be testable on a machine with a live
+container runtime and no ability to start one. So `internal/ledger` owns the
+record and the `flock`, `internal/ports` owns the block and the prober,
+`internal/reclaim` is the only file that knows what a `docker` command line looks
+like, and `internal/ryuk` is fifteen lines of client for a reaper nobody in this
+repository runs. None of them has a dependency, and each is skipped or faked in
+the two places that touch Docker for real.
 
 ## `caf mcp`
 
@@ -596,7 +785,12 @@ Phase 0 (v0, now):
 - [ ] `caf gen` — generate SDKs from contracts
 - [ ] `caf contract fetch` — pull a contract from a registry
 - [ ] `caf deploy` — push to the platform
-- [ ] `caf mcp` — serve the cafaye tools to agents
+- [x] `caf mcp` — serve the cafaye tools to agents
+- [x] `caf reclaim` — the reclamation ledger, containers before volumes, tri-state
+- [x] `caf env up` — the only provisioning verb: reserve, run as the parent, reclaim
+- [ ] `caf gate` — the tier policy (MD12), reading `env up`'s receipt. **Not
+      written here on purpose:** a gate that can be passed is worse than no gate,
+      because it turns "not built yet" into a green badge.
 - [ ] Homebrew and Scoop install targets
 - [ ] shell completions
 

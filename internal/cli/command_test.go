@@ -15,10 +15,12 @@ func TestRegistryContainsEveryCommand(t *testing.T) {
 		"deploy",
 		"dev",
 		"doctor",
+		"env",
 		"gen",
 		"init",
 		"mcp",
 		"new",
+		"reclaim",
 		"version",
 	}
 

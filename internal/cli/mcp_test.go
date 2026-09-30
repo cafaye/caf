@@ -278,9 +278,6 @@ func TestTheDoctorToolReportsBothHalvesOfTheDoctorReport(t *testing.T) {
 			t.Errorf("row %q is missing yet carries a path", row.Name)
 		}
 	}
-	if report.ProjectName != "stack" {
-		t.Errorf("project name = %q, want stack", report.ProjectName)
-	}
 	if report.PlanError != "" {
 		t.Errorf("plan error = %q, want none for a project that plans", report.PlanError)
 	}
@@ -289,10 +286,26 @@ func TestTheDoctorToolReportsBothHalvesOfTheDoctorReport(t *testing.T) {
 	if len(report.Checks) == 0 {
 		t.Error("no project checks were reported, so the machine half is the whole answer")
 	}
+	// Each check carries the tri-state word and, when it is not ok, the command
+	// that fixes it. An agent acting on a machine needs the command at least as
+	// much as a person does, and one that guesses at a fix is how a machine ends
+	// up in a state nobody chose.
 	for _, check := range report.Checks {
-		if check.Name == "" || check.Status == "" {
-			t.Errorf("a check row is %+v, want a name and a status", check)
+		if check.Name == "" || check.State == "" {
+			t.Errorf("a check row is %+v, want a name and a state", check)
+			continue
 		}
+		switch check.State {
+		case "ok", "warn", "fail":
+		default:
+			t.Errorf("check %q has state %q, which is not one of the three", check.Name, check.State)
+		}
+		if check.State != "ok" && check.Fix == "" {
+			t.Errorf("check %q is %s with no fix: %q", check.Name, check.State, check.Detail)
+		}
+	}
+	if report.Verdict != "ok" && report.Verdict != "warn" && report.Verdict != "fail" {
+		t.Errorf("verdict = %q, want one of the three states", report.Verdict)
 	}
 }
 
@@ -336,8 +349,30 @@ func TestTheDoctorToolReportsAProjectItCannotRead(t *testing.T) {
 	if !strings.Contains(report.PlanError, "cafaye.yml") {
 		t.Errorf("plan error = %q, want it to name the manifest that is missing", report.PlanError)
 	}
-	if len(report.Checks) != 0 {
-		t.Errorf("checks = %+v, want none: the project could not be read", report.Checks)
+	// The machine facts are still gathered: a runtime that is not answering is a
+	// fact about the machine, and it is worth having even when the project could
+	// not be read. What must not happen is a *port* check running against a plan
+	// that does not exist.
+	var sawPlan, sawPorts bool
+	for _, check := range report.Checks {
+		switch check.Name {
+		case "plan":
+			sawPlan = true
+			if check.State != "fail" {
+				t.Errorf("the plan check is %s, want fail: the project could not be read", check.State)
+			}
+		case "ports":
+			sawPorts = true
+			if !strings.Contains(check.Detail, "publishes nothing") {
+				t.Errorf("the ports check ran against a plan that does not exist: %q", check.Detail)
+			}
+		}
+	}
+	if !sawPlan {
+		t.Error("no plan check: the failure is only in the plan_error field, which an agent has to know to look at")
+	}
+	if !sawPorts {
+		t.Error("no ports check, so the agent cannot tell the port question was not asked")
 	}
 }
 

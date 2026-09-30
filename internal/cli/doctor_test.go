@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"os/exec"
 	"strings"
 	"testing"
@@ -37,11 +38,16 @@ func TestDoctorReportsEveryTool(t *testing.T) {
 
 // Every tool must show up as a row with a status, whether or not the machine
 // running the test has it installed.
+//
+// The exit code is whatever the machine found, and this test runs in internal/cli,
+// which is not a project: the plan check fails, so the code is 1. Asserting the
+// tool table against a fixed exit code would make the case fail on any machine
+// where the report found something, which is the opposite of what it is for.
 func TestDoctorPrintsARowPerTool(t *testing.T) {
 	code, stdout, stderr := runCLI(t, testVersion, "doctor")
 
-	if code != 0 {
-		t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, stderr)
+	if code != exitSuccess && code != exitFailure {
+		t.Fatalf("exit code = %d, want 0 or 1 (stderr: %s)", code, stderr)
 	}
 	rows := parseDoctorRows(stdout)
 	for _, want := range wantTools {
@@ -165,23 +171,30 @@ func TestDoctorNamesTheResolvedBinary(t *testing.T) {
 	}
 }
 
-// doctor is a report, never a gate: it exits 0 whatever it finds.
-func TestDoctorAlwaysSucceeds(t *testing.T) {
-	tests := []struct {
-		name  string
-		found []string
-	}{
-		{name: "nothing installed", found: nil},
-		{name: "everything installed", found: []string{"git", "docker", "docker-compose", "tilt", "go", "ruby", "elixir", "python3", "bun", "rustc"}},
-	}
+// A doctor built with only a lookPath and an out — the shape the toolchain table's
+// own tests use — still produces a whole report rather than a panic, and it does
+// not fail on the *tools* alone. The exit code here is the whole report's, and
+// this directory is not a project, so the plan check is what fails.
+func TestDoctorToleratesAZeroValue(t *testing.T) {
+	d := &doctor{lookPath: fakeLookPath("git"), out: &strings.Builder{}}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			d := &doctor{lookPath: fakeLookPath(tt.found...), out: &strings.Builder{}}
-			if err := d.run(); err != nil {
-				t.Errorf("run() = %v, want nil", err)
-			}
-		})
+	if err := d.run(); err == nil {
+		t.Error("run() = nil, want the plan check's failure: this directory is not a project")
+	} else if !errors.Is(err, errReported) {
+		t.Errorf("run() = %v, want errReported — the verdict is on the page, not on stderr", err)
+	}
+}
+
+// Every toolchain fact, in isolation, resolves without reaching for the machine.
+// A doctor with no tools at all is still a doctor that can render.
+func TestDoctorRendersWithNoToolsAtAll(t *testing.T) {
+	out := &strings.Builder{}
+	d := &doctor{lookPath: fakeLookPath(), out: out}
+
+	d.write(d.check())
+
+	if got := out.String(); !strings.Contains(got, "0 ok, 10 missing") {
+		t.Errorf("the tool table is wrong for a machine with nothing installed:\n%s", got)
 	}
 }
 
@@ -220,14 +233,18 @@ func TestDoctorSummary(t *testing.T) {
 // one, `caf doctor ../billing` checks that one. Two paths is a usage error —
 // there is one project per report.
 func TestDoctorArgumentCount(t *testing.T) {
+	// The exit codes here are the *router's*, not the report's: a report that
+	// found something exits 1, and the test's own directory is not a project.
+	// So the rows that exercise arity check the distinction between 1 and 2,
+	// which is what the case is about.
 	tests := []struct {
 		name     string
 		args     []string
 		wantCode int
 		wantErr  string
 	}{
-		{name: "no argument means this directory", args: nil, wantCode: exitSuccess},
-		{name: "one project directory", args: []string{"."}, wantCode: exitSuccess},
+		{name: "no argument means this directory", args: nil, wantCode: exitFailure},
+		{name: "one project directory", args: []string{"."}, wantCode: exitFailure},
 		{
 			name:     "two directories is a usage error",
 			args:     []string{".", ".."},

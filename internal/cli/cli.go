@@ -28,6 +28,20 @@ var errUsage = errors.New("usage")
 // checked and it did not pass.
 var errReported = errors.New("reported")
 
+// exitCoder is an error that names the process exit code itself, for the one
+// case where caf is a parent rather than the thing being judged: `caf env up`
+// runs a command under test, and a CI job that read 0 out of a red suite would
+// be a green badge for a red run — the exact invisible red run this binary
+// exists to make impossible.
+//
+// It is an interface rather than a sentinel because the code is the child's, not
+// one of caf's three, and inventing a fourth caf-wide code for it would be worse
+// than a command that passes one through.
+type exitCoder interface {
+	error
+	ExitCode() int
+}
+
 // Options is one CLI invocation. main fills it from the process; tests fill it
 // from buffers.
 type Options struct {
@@ -69,6 +83,14 @@ func Run(opts Options) int {
 	err := newRoot(env).execute(env, opts.Args)
 	if err == nil {
 		return exitSuccess
+	}
+	// A command that is a parent of the thing being judged passes that thing's
+	// status through, and says nothing of its own: the child already wrote its
+	// reason to stderr, and a second copy of it would be noise in a log a person
+	// is reading once.
+	var coded exitCoder
+	if errors.As(err, &coded) {
+		return coded.ExitCode()
 	}
 	// The command already printed its own report; the exit code is all that is
 	// left to say, and stderr stays empty so the report is not duplicated.

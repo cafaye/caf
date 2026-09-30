@@ -77,16 +77,23 @@ jobs:
       # than its own directive claims. internal/ci failing on that diff is the
       # check working, not breaking.
       versions: '{"go":"1.25.0"}'
-      # Measured, not guessed. 90.0% after caf-05, which added internal/mcp and
-      # the six MCP tools with their tests. The platform divergence is the same
-      # one as before — uncovered statements in doctor_probe_darwin.go against
+      # Measured, not guessed. 89.1% on darwin after caf-06, which added the
+      # reclamation ledger, the port registry, the reclaim sweep, the reaper
+      # lease and the tri-state doctor. The platform divergence is the same one
+      # as before — uncovered statements in doctor_probe_darwin.go against
       # doctor_probe_linux.go, the whole of the `//go:build` surface in this
-      # tree — so the darwin figure is the one to read and the linux figure is
-      # a little under it. 85 stays the gate rather than being raised to the
-      # measurement: a threshold set at the current number fails on the next
-      # line of code nobody covered, which trains people to write the test that
-      # lifts it rather than to read what the gate says. Raise it when the floor
-      # has genuinely risen, never to follow a single packet's number upward.
+      # tree, and now lock_other.go against lock_unix.go — so the darwin figure is
+      # the one to read and the linux figure is a little under it. 85 stays the
+      # gate rather than being raised to the measurement: a threshold set at the
+      # current number fails on the next line of code nobody covered, which
+      # trains people to write the test that lifts it rather than to read what
+      # the gate says. Raise it when the floor has genuinely risen, never to
+      # follow a single packet's number upward.
+      #
+      # caf-06 added the coverage back rather than up. The first pass through it
+      # dropped the tree to 82.9%, and the three packages it added were at
+      # 68-75%: the reclamation path was the least-tested part of the binary,
+      # which is the part that runs when something has already gone wrong.
       coverage-fail-under: '85'
       # caf is a CLI. It serves no HTTP, holds no listener, and the tree has no
       # reference to a traceparent or an OTel SDK, so the conformance job has

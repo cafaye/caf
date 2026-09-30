@@ -1029,3 +1029,106 @@ func coreFixture(t *testing.T, name string) []byte {
 	}
 	return data
 }
+
+// A published port is a promise that something answers on it. A repository that
+// declares no OpenAPI document is a binary, a worker or a library — caf itself
+// is one — and printing localhost:8080 for it is a URL that refuses every
+// connection. The container port is still the language's, so anything on the
+// stack network can reach it.
+func TestPlanPublishesNothingForAServiceWithNoHTTPSurface(t *testing.T) {
+	tests := []struct {
+		name         string
+		document     string
+		wantPort     int
+		wantPublish  int
+		wantHostPort int
+	}{
+		{
+			name: "an api service publishes",
+			document: `name: stack
+description: Serves HTTP.
+language: go
+core: ^0.2.0
+exposes:
+  api: openapi/openapi.yaml
+repository:
+  url: git@github.com:cafaye/stack.git
+owner:
+  team: stack
+`,
+			wantPort:     8080,
+			wantPublish:  8080,
+			wantHostPort: 8080,
+		},
+		{
+			name: "a binary publishes nothing",
+			document: `name: caf
+description: A command line, not a service.
+language: go
+core: ^0.2.0
+repository:
+  url: git@github.com:cafaye/caf.git
+owner:
+  team: caf
+`,
+			wantPort:     8080,
+			wantPublish:  0,
+			wantHostPort: 0,
+		},
+		{
+			name: "a worker publishes nothing",
+			document: `name: courier
+description: Publishes events, takes no HTTP.
+language: elixir
+core: ^0.2.0
+exposes:
+  events:
+    - courier.email.queued
+repository:
+  url: git@github.com:cafaye/courier.git
+owner:
+  team: courier
+`,
+			wantPort:     4000,
+			wantPublish:  0,
+			wantHostPort: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stack := mustPlan(t, tt.document, alphaRegistry(), Options{Build: buildGo, HostPort: tt.wantHostPort})
+
+			root := service(t, stack, manifestName(t, tt.document))
+			if root.Port != tt.wantPort {
+				t.Errorf("container port = %d, want %d", root.Port, tt.wantPort)
+			}
+			if root.Published != tt.wantPublish {
+				t.Errorf("published = %d, want %d", root.Published, tt.wantPublish)
+			}
+		})
+	}
+}
+
+// `-port` is a developer saying they want it on the host, so it publishes even
+// for a service that declares no HTTP surface. It is the flag the port-conflict
+// message points at, so it has to reach a service with no port of its own.
+func TestPlanPortOverridePublishesEvenWithoutAnHTTPSurface(t *testing.T) {
+	stack := mustPlan(t, `name: caf
+description: A command line.
+language: go
+core: ^0.2.0
+repository:
+  url: git@github.com:cafaye/caf.git
+owner:
+  team: caf
+`, alphaRegistry(), Options{Build: buildGo, HostPort: 8080})
+
+	root := service(t, stack, "caf")
+	if root.Published != 8080 {
+		t.Errorf("published = %d, want 8080", root.Published)
+	}
+	if root.Port != 8080 {
+		t.Errorf("container port = %d, want the language's 8080", root.Port)
+	}
+}

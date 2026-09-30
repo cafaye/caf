@@ -428,9 +428,17 @@ func TestComposeCommandLine(t *testing.T) {
 			want: []string{"compose", "-p", "stack-dev", "-f", "caf.dev.compose.yaml", "ps", "-a", "--format", "json"},
 		},
 		{
-			name: "down keeps the volumes: a developer restarts more often than they reset",
-			call: composeCall{verb: "down", project: "stack-dev", file: "caf.dev.compose.yaml", flags: []string{"--remove-orphans"}},
-			want: []string{"compose", "-p", "stack-dev", "-f", "caf.dev.compose.yaml", "down", "--remove-orphans"},
+			// The project remembers the file it was created from, so `down`
+			// names the project alone. A file that has been moved or deleted
+			// must not stop a stack from being taken down.
+			name: "down names the project, not the file",
+			call: composeCall{verb: "down", project: "stack-dev", flags: []string{"--remove-orphans"}},
+			want: []string{"compose", "-p", "stack-dev", "down", "--remove-orphans"},
+		},
+		{
+			name: "ps without a file omits -f rather than passing an empty one",
+			call: composeCall{verb: "ps", project: "stack-dev", flags: []string{"-a", "--format", "json"}},
+			want: []string{"compose", "-p", "stack-dev", "ps", "-a", "--format", "json"},
 		},
 	}
 

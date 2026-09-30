@@ -122,21 +122,30 @@ func newDoctorCommand() *Command {
 			"<path> is a project directory, the current one by default. The project\n" +
 			"section is skipped with -tools-only.\n" +
 			"\n" +
+			"-registry is the catalog caf dev would use. A project that declares a\n" +
+			"dependency cannot be planned without one, and a report that said so\n" +
+			"without saying how would send a developer to the help output.\n" +
+			"\n" +
 			"Always exits 0. It is a report about a machine, not a gate.",
 		Flags: func(fs *flag.FlagSet) {
 			fs.BoolVar(&opts.toolsOnly, "tools-only", false, "print only the toolchain table")
 			fs.StringVar(&opts.project, "project", ".", "project directory to check")
+			fs.StringVar(&opts.registry, "registry", "", "service catalog to plan against; the same one caf dev uses")
 		},
 	}
 	c.Run = func(args []string, env *Env) error {
-		if err := wantArgs(c.Name, c.Usage, 0, len(args)); err != nil {
-			return err
+		// An optional project directory, so `caf doctor` alone checks this one
+		// and `caf doctor ../billing` checks that one. Two paths is a usage
+		// error: there is one project per report and a flag for the usual case.
+		if len(args) > 1 {
+			return fmt.Errorf("%w: caf %s wants at most 1 argument, a project directory, got %d (usage: %s)",
+				errUsage, c.Name, len(args), c.Usage)
 		}
 		dir := opts.project
 		if len(args) == 1 {
 			dir = args[0]
 		}
-		return newDoctor(env).report(dir, opts)
+		return newDoctor(env, opts.registry).report(dir, opts)
 	}
 	return c
 }
@@ -144,21 +153,20 @@ func newDoctorCommand() *Command {
 // doctorOptions is the parsed flag state for `caf doctor`.
 type doctorOptions struct {
 	project   string
+	registry  string
 	toolsOnly bool
 }
 
 // newDoctor is the wiring the router uses. Every seam is filled in with the
 // real thing; a test fills them in with fakes.
-func newDoctor(env *Env) *doctor {
+func newDoctor(env *Env, registry string) *doctor {
 	return &doctor{
 		lookPath: exec.LookPath,
 		probes:   &machineProbes{runtime: runtimeBinary()},
 		load:     dev.Load,
-		plan: func(project dev.Project) (dev.Stack, error) {
-			return dev.Plan(project.Manifest, dev.Catalog{}, dev.Options{Build: project.Build})
-		},
-		ctx: envOrBackground(*env),
-		out: env.Stdout,
+		plan:     plannerFor(registry),
+		ctx:      envOrBackground(*env),
+		out:      env.Stdout,
 	}
 }
 
@@ -242,6 +250,27 @@ func (r doctorReport) summary() string {
 		}
 	}
 	return fmt.Sprintf("checked %d tools, %d ok, %d missing", len(r), ok, len(r)-ok)
+}
+
+// plannerFor is the plan the port check is derived from. It takes the same
+// catalog `caf dev` would: a project that declares a dependency cannot be
+// planned without one, and doctor reporting "nothing to run" for a project
+// that runs perfectly well would be a false alarm about a machine.
+func plannerFor(path string) func(dev.Project) (dev.Stack, error) {
+	return func(project dev.Project) (dev.Stack, error) {
+		registry, err := registryAt(path)
+		if err != nil {
+			return dev.Stack{}, err
+		}
+		return dev.Plan(project.Manifest, registry, dev.Options{Build: project.Build})
+	}
+}
+
+func registryAt(path string) (dev.Registry, error) {
+	if path == "" {
+		return dev.Catalog{}, nil
+	}
+	return dev.ReadCatalogFile(path)
 }
 
 func dash(value string) string {

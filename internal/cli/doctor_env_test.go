@@ -388,6 +388,9 @@ func runDoctorIn(t *testing.T, dir string, probes *fakeProbeSet, overrides map[s
 		case "-project":
 			i++
 			opts.project = args[i]
+		case "-registry":
+			i++
+			opts.registry = args[i]
 		default:
 			t.Fatalf("unhandled doctor flag %q in this test", args[i])
 		}
@@ -399,9 +402,7 @@ func runDoctorIn(t *testing.T, dir string, probes *fakeProbeSet, overrides map[s
 		probes:   probes,
 		out:      &out,
 		load:     dev.Load,
-		plan: func(loaded dev.Project) (dev.Stack, error) {
-			return dev.Plan(loaded.Manifest, dev.Catalog{}, dev.Options{Build: loaded.Build})
-		},
+		plan:     plannerFor(opts.registry),
 	}
 	// doctor is a report, never a gate: it cannot fail, and the tests assert
 	// that by the exit code being 0 whatever the machine looks like.
@@ -525,4 +526,53 @@ func toolchainBinary(language string) string {
 		}
 	}
 	return ""
+}
+
+// doctor plans against the same catalog `caf dev` uses. A project that declares
+// a dependency cannot be planned without one, so a doctor that had no way to
+// name a catalog would report "nothing to run" for a project that runs
+// perfectly well — a false alarm about a machine, which is worse than no
+// report.
+func TestDoctorPlansAgainstTheSameCatalogCafDevUses(t *testing.T) {
+	dir := projectDir(t, map[string]string{
+		"docker/Dockerfile": "FROM scratch\n",
+		"cafaye.yml": `name: stack
+description: Depends on alpha.
+language: go
+core: ^0.2.0
+exposes:
+  api: openapi/openapi.yaml
+dependencies:
+  - name: alpha
+    version: ^0.1.0
+repository:
+  url: git@github.com:cafaye/stack.git
+owner:
+  team: stack
+`,
+	})
+	// No catalog: the project builds, but its declared dependency cannot be
+	// resolved, and the report says that in the planner's own words rather than
+	// printing a project with fewer services and no explanation.
+	_, stdout, _ := runDoctorIn(t, dir, fakeProbes(), nil)
+
+	if !strings.Contains(stdout, "does not know how to run alpha") {
+		t.Errorf("the report does not say the dependency is unresolvable\ngot:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "-registry") {
+		t.Errorf("the report does not say how to supply one\ngot:\n%s", stdout)
+	}
+
+	// With one, the dependency is planned and the report is about the machine.
+	catalogPath := filepath.Join(dir, "catalog.json")
+	writeTestFile(t, catalogPath, `{"alpha": {"name": "alpha", "image": "ghcr.io/cafaye/alpha:1.2.3", "port": 8081}}`)
+	_, withCatalog, _ := runDoctorIn(t, dir, fakeProbes(), nil, "-registry", catalogPath)
+
+	if strings.Contains(withCatalog, "does not know how to run") {
+		t.Errorf("the report still cannot resolve the dependency with a catalog\ngot:\n%s", withCatalog)
+	}
+	// stack, alpha, postgres, redis: the closure, health-gated in that order.
+	if !strings.Contains(withCatalog, "4 services in stack-dev") {
+		t.Errorf("the report does not count the planned services\ngot:\n%s", withCatalog)
+	}
 }

@@ -216,14 +216,37 @@ func TestDoctorSummary(t *testing.T) {
 	}
 }
 
-func TestDoctorTakesNoArguments(t *testing.T) {
-	code, _, stderr := runCLI(t, testVersion, "doctor", "extra")
-
-	if code != 2 {
-		t.Fatalf("exit code = %d, want 2 (stderr: %s)", code, stderr)
+// doctor takes an optional project directory: `caf doctor` alone checks this
+// one, `caf doctor ../billing` checks that one. Two paths is a usage error —
+// there is one project per report.
+func TestDoctorArgumentCount(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		wantCode int
+		wantErr  string
+	}{
+		{name: "no argument means this directory", args: nil, wantCode: exitSuccess},
+		{name: "one project directory", args: []string{"."}, wantCode: exitSuccess},
+		{
+			name:     "two directories is a usage error",
+			args:     []string{".", ".."},
+			wantCode: exitUsage,
+			wantErr:  "wants at most 1 argument",
+		},
 	}
-	if !strings.Contains(stderr, "wants 0 arguments") {
-		t.Errorf("stderr missing the usage error\ngot:\n%s", stderr)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, _, stderr := runCLI(t, testVersion, append([]string{"doctor"}, tt.args...)...)
+
+			if code != tt.wantCode {
+				t.Fatalf("exit code = %d, want %d (stderr: %s)", code, tt.wantCode, stderr)
+			}
+			if tt.wantErr != "" && !strings.Contains(stderr, tt.wantErr) {
+				t.Errorf("stderr missing %q\ngot:\n%s", tt.wantErr, stderr)
+			}
+		})
 	}
 }
 

@@ -9,25 +9,30 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cafaye/caf/internal/dev"
 )
 
 // A recording runtime is what lets the whole command be driven without a
-// container runtime. It records what it was told and answers from a script, so
-// a test can bring a stack up, watch it settle, interrupt it and read back the
-// report with nothing running anywhere.
+// container runtime. It is stateful rather than scripted: it holds the set of
+// services that are "running" and `Down` clears it, because that is the one
+// behaviour the teardown's check depends on. A fake that answered the same
+// snapshot forever would spin the teardown until its deadline on every
+// interrupt — which is a slow test rather than a wrong one, and slow tests are
+// how a suite stops being run.
 type recordingRuntime struct {
-	snapshots []dev.Snapshot
-	upErr     error
-	snapErr   error
-	downErr   error
-
-	upCalls  []upCall
-	downCall int
-	// onUp runs when the stack has been brought up, which is where a test
-	// cancels the context to stand in for a Ctrl-C arriving mid-run.
-	onUp func()
+	running []dev.State
+	upErr   error
+	snapErr error
+	downErr error
+	// interrupted marks a bring-up whose client was killed, which is when the
+	// daemon's work outlives it.
+	interrupted bool
+	onUp        func()
+	upCalls     []upCall
+	downCall    int
+	polls       int
 }
 
 type upCall struct{ project, file string }
@@ -37,39 +42,62 @@ func (r *recordingRuntime) Up(_ context.Context, project, file string) error {
 	if r.onUp != nil {
 		r.onUp()
 	}
-	return r.upErr
+	if r.upErr != nil {
+		return r.upErr
+	}
+	return nil
 }
 
 func (r *recordingRuntime) Snapshot(context.Context, string) (dev.Snapshot, error) {
+	r.polls++
 	if r.snapErr != nil {
 		return nil, r.snapErr
 	}
-	if len(r.snapshots) == 0 {
-		return dev.Snapshot{}, nil
-	}
-	if len(r.snapshots) == 1 {
-		return r.snapshots[0], nil
-	}
-	r.snapshots = r.snapshots[1:]
-	return r.snapshots[0], nil
+	return dev.Snapshot(r.running), nil
 }
 
 func (r *recordingRuntime) Down(context.Context, string) error {
 	r.downCall++
-	return r.downErr
+	if r.downErr != nil {
+		return r.downErr
+	}
+	// The daemon keeps working after the client that asked for the containers is
+	// killed, and what it had already been told to create arrives a moment
+	// later. So when the bring-up was interrupted, the first `down` removes the
+	// network and misses the containers, and only the second one finds them.
+	// This is the real behaviour, measured against a real runtime; the fake
+	// models it so the teardown's check is tested rather than assumed.
+	if r.interrupted && r.downCall == 1 {
+		return nil
+	}
+	r.running = nil
+	return nil
 }
 
 // upEverything is the snapshot of a stack that came up: the infrastructure
-// healthy, the project running.
-func upEverything(names ...string) dev.Snapshot {
-	snapshot := dev.Snapshot{
-		{Service: "postgres", Status: dev.StatusHealthy, Detail: "Up 2 seconds"},
-		{Service: "redis", Status: dev.StatusHealthy, Detail: "Up 2 seconds"},
+// healthy, the named services running.
+func upEverything(names ...string) []dev.State {
+	running := []dev.State{
+		{Service: "postgres", Status: dev.StatusHealthy, Detail: "Up 2 seconds (healthy)"},
+		{Service: "redis", Status: dev.StatusHealthy, Detail: "Up 2 seconds (healthy)"},
 	}
 	for _, name := range names {
-		snapshot = append(snapshot, dev.State{Service: name, Status: dev.StatusRunning, Detail: "Up"})
+		running = append(running, dev.State{Service: name, Status: dev.StatusRunning, Detail: "Up"})
 	}
-	return snapshot
+	return running
+}
+
+// withStatus replaces one service's state in a stack, so a case can arrange a
+// stack that came up except for one thing.
+func withStatus(running []dev.State, service string, status dev.Status, detail string) []dev.State {
+	out := make([]dev.State, len(running))
+	copy(out, running)
+	for i := range out {
+		if out[i].Service == service {
+			out[i] = dev.State{Service: service, Status: status, Detail: detail}
+		}
+	}
+	return out
 }
 
 // projectDir writes a real project directory: a manifest, and the Dockerfile
@@ -230,7 +258,7 @@ func TestDevWritesAndPrintsTheComposeFile(t *testing.T) {
 // nothing. It writes the file — that is the artifact — and stops.
 func TestDevDryRunStartsNothing(t *testing.T) {
 	dir := buildableProject(t)
-	runtime := &recordingRuntime{snapshots: []dev.Snapshot{upEverything("stack")}}
+	runtime := &recordingRuntime{running: upEverything("stack")}
 	c := newDevCommand(devDeps{runtime: runtime, registry: emptyRegistry})
 
 	err := c.Execute(newTestEnv(), []string{"-dry-run", dir})
@@ -294,7 +322,7 @@ func TestDevIsIdempotent(t *testing.T) {
 func TestDevBringsUpTheStackAndReportsIt(t *testing.T) {
 	tests := []struct {
 		name       string
-		snapshots  []dev.Snapshot
+		snapshots  []dev.State
 		wantCode   int
 		wantOut    []string
 		dontWant   []string
@@ -302,7 +330,7 @@ func TestDevBringsUpTheStackAndReportsIt(t *testing.T) {
 	}{
 		{
 			name:      "everything came up",
-			snapshots: []dev.Snapshot{upEverything("stack")},
+			snapshots: upEverything("stack"),
 			wantCode:  exitSuccess,
 			wantOut: []string{
 				"caf.dev.compose.yaml", "services:", "postgres", "redis", "stack",
@@ -310,33 +338,25 @@ func TestDevBringsUpTheStackAndReportsIt(t *testing.T) {
 			},
 		},
 		{
-			name: "the project service died",
-			snapshots: []dev.Snapshot{{
-				{Service: "postgres", Status: dev.StatusHealthy, Detail: "Up 2 seconds"},
-				{Service: "redis", Status: dev.StatusHealthy, Detail: "Up 2 seconds"},
-				{Service: "stack", Status: dev.StatusExited, Detail: "Exited (1)"},
-			}},
-			wantCode: exitFailure,
-			wantOut:  []string{"exited", "stack did not come up"},
+			name:      "the project service died",
+			snapshots: withStatus(upEverything("stack"), "stack", dev.StatusExited, "Exited (1)"),
+			wantCode:  exitFailure,
+			wantOut:   []string{"exited", "stack did not come up"},
 			// A container that exited is a fact, not a reason to keep waiting.
 			dontWant: []string{"timed out"},
 		},
 		{
-			name: "the project service is unhealthy",
-			snapshots: []dev.Snapshot{{
-				{Service: "postgres", Status: dev.StatusHealthy, Detail: "Up 2 seconds"},
-				{Service: "redis", Status: dev.StatusHealthy, Detail: "Up 2 seconds"},
-				{Service: "stack", Status: dev.StatusUnhealthy, Detail: "unhealthy"},
-			}},
-			wantCode: exitFailure,
-			wantOut:  []string{"unhealthy", "stack did not come up"},
+			name:      "the project service is unhealthy",
+			snapshots: withStatus(upEverything("stack"), "stack", dev.StatusUnhealthy, "unhealthy"),
+			wantCode:  exitFailure,
+			wantOut:   []string{"unhealthy", "stack did not come up"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := buildableProject(t)
-			runtime := &recordingRuntime{snapshots: tt.snapshots}
+			runtime := &recordingRuntime{running: tt.snapshots}
 			var out bytes.Buffer
 			env := newTestEnv()
 			env.Stdout = &out
@@ -393,7 +413,7 @@ owner:
   team: stack
 `,
 	})
-	runtime := &recordingRuntime{snapshots: []dev.Snapshot{upEverything("stack", "alpha")}}
+	runtime := &recordingRuntime{running: upEverything("stack", "alpha")}
 	c := newDevCommand(devDeps{runtime: runtime, registry: func(string) (dev.Registry, error) {
 		return dev.Catalog{
 			"alpha": {Name: "alpha", Image: "ghcr.io/cafaye/alpha:1.2.3", Dependencies: []string{"beta"}},
@@ -431,7 +451,7 @@ func TestDevRefusesAPortConflict(t *testing.T) {
 	catalog["alpha"] = dev.Entry{
 		Name: "alpha", Image: "ghcr.io/cafaye/alpha:1.2.3", Port: 8080, Publish: true,
 	}
-	runtime := &recordingRuntime{snapshots: []dev.Snapshot{upEverything("stack", "alpha")}}
+	runtime := &recordingRuntime{running: upEverything("stack", "alpha")}
 	command := newDevCommand(devDeps{runtime: runtime, registry: func(string) (dev.Registry, error) {
 		return catalog, nil
 	}})
@@ -469,7 +489,7 @@ owner:
   team: courier
 `,
 	})
-	runtime := &recordingRuntime{snapshots: []dev.Snapshot{upEverything("courier")}}
+	runtime := &recordingRuntime{running: upEverything("courier")}
 	var out bytes.Buffer
 	env := newTestEnv()
 	env.Stdout = &out
@@ -509,7 +529,7 @@ owner:
   team: stack
 `,
 	})
-	runtime := &recordingRuntime{snapshots: []dev.Snapshot{upEverything("stack")}}
+	runtime := &recordingRuntime{running: upEverything("stack")}
 
 	code, _, stderr := runCLI(t, testVersion, "dev", dir)
 
@@ -737,12 +757,8 @@ func TestDevTearsDownOnInterrupt(t *testing.T) {
 	// The stack comes up, and then the interrupt arrives — the case a developer
 	// actually hits, and the one that leaves containers behind if it is missed.
 	runtime := &recordingRuntime{
-		snapshots: []dev.Snapshot{{
-			{Service: "postgres", Status: dev.StatusHealthy, Detail: "Up"},
-			{Service: "redis", Status: dev.StatusHealthy, Detail: "Up"},
-			{Service: "stack", Status: dev.StatusStarting, Detail: "health: starting"},
-		}},
-		onUp: cancel,
+		running: withStatus(upEverything("stack"), "stack", dev.StatusStarting, "health: starting"),
+		onUp:    cancel,
 	}
 	c := newDevCommand(devDeps{runtime: runtime, registry: emptyRegistry})
 	var out bytes.Buffer
@@ -770,7 +786,7 @@ func TestDevInterruptedBeforeStartingRunsNothing(t *testing.T) {
 	dir := buildableProject(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	runtime := &recordingRuntime{snapshots: []dev.Snapshot{upEverything("stack")}}
+	runtime := &recordingRuntime{running: upEverything("stack")}
 	c := newDevCommand(devDeps{runtime: runtime, registry: emptyRegistry})
 	env := newTestEnv()
 	env.Context = ctx
@@ -795,11 +811,7 @@ func TestDevReportsAFailedTeardown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	runtime := &recordingRuntime{
-		snapshots: []dev.Snapshot{{
-			{Service: "postgres", Status: dev.StatusHealthy, Detail: "Up"},
-			{Service: "redis", Status: dev.StatusHealthy, Detail: "Up"},
-			{Service: "stack", Status: dev.StatusStarting, Detail: "health: starting"},
-		}},
+		running: withStatus(upEverything("stack"), "stack", dev.StatusStarting, "health: starting"),
 		downErr: errors.New("the runtime is not reachable"),
 		onUp:    cancel,
 	}
@@ -845,11 +857,9 @@ func TestDevReportsARuntimeFailure(t *testing.T) {
 // injected clock, so this test does not wait either.
 func TestDevReportsAStackThatNeverSettles(t *testing.T) {
 	dir := buildableProject(t)
-	runtime := &recordingRuntime{snapshots: []dev.Snapshot{{
-		{Service: "postgres", Status: dev.StatusHealthy, Detail: "Up"},
-		{Service: "redis", Status: dev.StatusHealthy, Detail: "Up"},
-		{Service: "stack", Status: dev.StatusStarting, Detail: "health: starting"},
-	}}}
+	runtime := &recordingRuntime{
+		running: withStatus(upEverything("stack"), "stack", dev.StatusStarting, "health: starting"),
+	}
 	c := newDevCommand(devDeps{runtime: runtime, registry: emptyRegistry})
 	var out bytes.Buffer
 	env := newTestEnv()
@@ -907,7 +917,7 @@ func TestDevArgumentCount(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := buildableProject(t)
 			t.Chdir(dir)
-			runtime := &recordingRuntime{snapshots: []dev.Snapshot{upEverything("stack")}}
+			runtime := &recordingRuntime{running: upEverything("stack")}
 			c := newDevCommand(devDeps{runtime: runtime, registry: emptyRegistry})
 
 			err := c.Execute(newTestEnv(), tt.args)
@@ -936,6 +946,12 @@ func TestDevRejectsABadPort(t *testing.T) {
 // emptyRegistry is a catalog that knows nothing, which is what a project with
 // no declared dependencies gets and what `-registry` absent means.
 func emptyRegistry(string) (dev.Registry, error) { return dev.Catalog{}, nil }
+
+// noSleep is the wait the teardown tests inject. They are about how many times
+// the loop runs, not about how long it waits, and a test that sat out the real
+// fifteen-second budget to prove the loop is bounded is a test that gets
+// deleted.
+func noSleep(context.Context, time.Duration) error { return nil }
 
 func devExitCode(err error) int {
 	switch {
@@ -978,5 +994,156 @@ func writeTestFile(t *testing.T, path, contents string) {
 	}
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A stack that failed to come up is a stack nobody asked to keep. The runtime
+// makes networks and containers before it discovers the failure, so without a
+// teardown the next `caf dev` starts from a partial one — and a second run
+// reconciles it rather than replacing it, so the mess is permanent.
+func TestDevTearsDownWhenTheStackFailsToStart(t *testing.T) {
+	dir := buildableProject(t)
+	runtime := &recordingRuntime{upErr: errors.New("no such image: ghcr.io/cafaye/stack:nope")}
+	c := newDevCommand(devDeps{runtime: runtime, registry: emptyRegistry})
+	var out bytes.Buffer
+	env := newTestEnv()
+	env.Stdout = &out
+
+	err := c.Execute(env, []string{dir})
+
+	if !strings.Contains(err.Error(), "no such image") {
+		t.Errorf("err = %v, want the runtime's own words", err)
+	}
+	if runtime.downCall != 1 {
+		t.Errorf("tore down %d times, want 1: a half-built stack must not be left behind", runtime.downCall)
+	}
+	if !strings.Contains(out.String(), "stopping stack-dev") {
+		t.Errorf("the report does not say the stack was stopped\ngot:\n%s", out.String())
+	}
+}
+
+// An interrupt that arrives while the stack is still being created is the case
+// that leaves a half-built stack behind: the runtime has made networks and
+// containers and has not finished. The teardown is registered before `up` runs,
+// so it fires here too.
+func TestDevTearsDownWhenInterruptedDuringStartup(t *testing.T) {
+	dir := buildableProject(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtime := &recordingRuntime{
+		upErr:       context.Canceled,
+		interrupted: true,
+		running:     upEverything("stack"),
+		onUp:        cancel,
+	}
+	c := newDevCommand(devDeps{runtime: runtime, registry: emptyRegistry})
+	var out bytes.Buffer
+	env := newTestEnv()
+	env.Stdout = &out
+	env.Context = ctx
+
+	err := c.Execute(env, []string{dir})
+
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want it to wrap context.Canceled", err)
+	}
+	// Twice, and that is the point: the daemon was still creating containers
+	// when the first `down` ran, so the first one missed them. A teardown that
+	// ran once and reported success would have left two containers behind.
+	if runtime.downCall != 2 {
+		t.Errorf("tore down %d times, want 2: the first one raced the daemon", runtime.downCall)
+	}
+	if len(runtime.running) != 0 {
+		t.Errorf("the stack is still up: %+v", runtime.running)
+	}
+}
+
+// A teardown that reports success without checking is the failure mode this
+// loop exists to prevent: the runtime's client dies, the daemon carries on, and
+// a single `down` removes the network while the containers it had already been
+// told to create turn up afterwards. The teardown asks what is left and repeats
+// itself while there is something left.
+func TestDevTeardownRepeatsUntilNothingIsLeft(t *testing.T) {
+	dir := buildableProject(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Three `down`s needed: the first two race the daemon, the third finds the
+	// stack still there, and the fourth is the one that clears it. The loop
+	// stops as soon as a snapshot comes back empty.
+	runtime := &stubbornRuntime{clearsOn: 3, onUp: cancel}
+	c := newDevCommand(devDeps{
+		runtime: runtime, registry: emptyRegistry,
+		sleep: noSleep, teardownBudget: time.Hour,
+	})
+	var out bytes.Buffer
+	env := newTestEnv()
+	env.Stdout = &out
+	env.Context = ctx
+
+	c.Execute(env, []string{"-wait", "1h", dir})
+
+	if runtime.downCall < 2 {
+		t.Errorf("tore down %d times, want more than once: the first one raced the daemon", runtime.downCall)
+	}
+	if !strings.Contains(out.String(), "hello-dev stopped") && !strings.Contains(out.String(), "stack-dev stopped") {
+		t.Errorf("the report does not say the stack was stopped\ngot:\n%s", out.String())
+	}
+}
+
+// stubbornRuntime is a runtime that keeps reporting containers until the third
+// `down`, which is what a daemon still working on a killed client's request
+// looks like from here.
+type stubbornRuntime struct {
+	clearsOn int
+	downCall int
+	onUp     func()
+}
+
+func (r *stubbornRuntime) Up(context.Context, string, string) error {
+	if r.onUp != nil {
+		r.onUp()
+	}
+	return nil
+}
+
+func (r *stubbornRuntime) Snapshot(context.Context, string) (dev.Snapshot, error) {
+	if r.downCall >= r.clearsOn {
+		return nil, nil
+	}
+	return dev.Snapshot{{Service: "stack", Status: dev.StatusStarting, Detail: "health: starting"}}, nil
+}
+
+func (r *stubbornRuntime) Down(context.Context, string) error {
+	r.downCall++
+	return nil
+}
+
+// The loop is bounded. A developer is standing there after a Ctrl-C, and a
+// teardown that never gives up is a teardown they kill, which leaves the very
+// containers it was trying to remove.
+func TestDevTeardownGivesUpRatherThanLoopingForever(t *testing.T) {
+	dir := buildableProject(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// A runtime that never clears anything.
+	runtime := &stubbornRuntime{clearsOn: 1 << 30, onUp: cancel}
+	// A budget of one interval: the loop is bounded, and this is the bound
+	// without sitting out the fifteen seconds the real one is.
+	c := newDevCommand(devDeps{
+		runtime: runtime, registry: emptyRegistry,
+		sleep: noSleep, teardownBudget: teardownRetry,
+	})
+	var out bytes.Buffer
+	env := newTestEnv()
+	env.Stdout = &out
+	env.Context = ctx
+
+	c.Execute(env, []string{"-wait", "1h", dir})
+
+	if !strings.Contains(out.String(), "still running") {
+		t.Errorf("the report does not say the stack is still up\ngot:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "by hand") {
+		t.Errorf("the report does not say what to do about it\ngot:\n%s", out.String())
 	}
 }

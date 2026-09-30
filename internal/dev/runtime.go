@@ -215,12 +215,22 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 type composeCall struct {
 	verb    string
 	project string
-	file    string
-	flags   []string
+	// file is the compose document, or "" for a call that names the project
+	// instead. `ps` and `down` do not need it: the project remembers which file
+	// it was created from, so a file that has since been moved or deleted still
+	// cannot stop a stack from being inspected or taken down. Passing an empty
+	// `-f` is worse than passing none — the runtime reads it as the working
+	// directory and reports "is a directory".
+	file  string
+	flags []string
 }
 
 func (c composeCall) args() []string {
-	args := []string{"compose", "-p", c.project, "-f", c.file, c.verb}
+	args := []string{"compose", "-p", c.project}
+	if c.file != "" {
+		args = append(args, "-f", c.file)
+	}
+	args = append(args, c.verb)
 	return append(args, c.flags...)
 }
 

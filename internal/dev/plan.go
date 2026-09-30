@@ -412,7 +412,15 @@ func (r *resolver) addProject(name string) error {
 	} else {
 		svc.Build = r.opts.Build
 	}
-	svc.Published = svc.Port
+	// A published port is a promise that something answers on it. A service
+	// that declares no OpenAPI document is a binary, a worker or a library, and
+	// printing localhost:8080 for one is a URL that refuses every connection.
+	// The container port is still the language's, so anything on the stack
+	// network can still reach it; `-port` overrides the host end and says so.
+	svc.Published = 0
+	if r.manifest.ServesHTTP() || r.opts.HostPort > 0 {
+		svc.Published = svc.Port
+	}
 	if r.opts.HostPort > 0 {
 		svc.Published = r.opts.HostPort
 	}

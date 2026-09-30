@@ -28,6 +28,26 @@ type devDeps struct {
 	// catalog ignores the path and returns one, and a caller with no path at all
 	// gets the empty registry rather than a nil function.
 	registry func(path string) (dev.Registry, error)
+	// sleep is how the teardown waits between checks, and teardownBudget is how
+	// long it keeps checking. Both are here for the same reason the wait loop's
+	// clock is in internal/dev: a test that has to sit out a real fifteen
+	// seconds to prove the teardown gives up is a test nobody runs, and the way
+	// to avoid it is to make the clock a seam rather than to weaken the test.
+	sleep          func(ctx context.Context, d time.Duration) error
+	teardownBudget time.Duration
+}
+
+// withDefaults fills in the seams a caller left nil, so a doctor or a dev built
+// with only the two it cares about still works. There is exactly one set of
+// defaults because there is exactly one production wiring.
+func (d devDeps) withDefaults() devDeps {
+	if d.sleep == nil {
+		d.sleep = sleepCtx
+	}
+	if d.teardownBudget == 0 {
+		d.teardownBudget = teardownTimeout
+	}
+	return d
 }
 
 // devOptions is the parsed flag state for `caf dev`.
@@ -85,6 +105,7 @@ func newDevCommand(deps devDeps) *Command {
 			fs.BoolVar(&opts.noInfra, "no-infra", false, "leave out the local database and cache")
 		},
 	}
+	deps = deps.withDefaults()
 	c.Run = func(args []string, env *Env) error {
 		dir := "."
 		switch len(args) {
@@ -250,23 +271,28 @@ func (r devRun) up(ctx context.Context, stack dev.Stack, file string) error {
 		return err
 	}
 
+	// A run that ends without a usable stack has to put it back down, and the
+	// two ways that happens are an interrupt and a bring-up that failed. Both
+	// are decided after this point, and both have to be caught here: the second
+	// one because the runtime makes networks and containers before it
+	// discovers the failure, and an interrupt during `up` is the first case with
+	// the same problem. So the teardown is armed before `up` runs.
+	//
+	// A run that ends with a stack up leaves it up, which is the whole point of
+	// `caf dev`. It is a defer on this goroutine rather than a watcher, because
+	// `dev.Wait` returns as soon as the context is done and a goroutine racing a
+	// channel close is a teardown that happens sometimes.
+	usable := false
+	defer func() {
+		if !usable {
+			r.teardown(stack.Project)
+		}
+	}()
+
 	fmt.Fprintf(w, "starting %d services in %s\n", len(stack.Services), stack.Project)
 	if err := r.deps.runtime.Up(ctx, stack.Project, absolute); err != nil {
 		return fmt.Errorf("caf dev: %w", err)
 	}
-
-	// The stack is up, so anything that ends this run by interruption has to put
-	// it down. The condition is the context and nothing else — a run that
-	// finished on its own leaves the stack up for the developer to keep using,
-	// which is the whole point of `caf dev`. It is a defer on this goroutine
-	// rather than a watcher, because `dev.Wait` returns as soon as the context
-	// is done and a goroutine racing a channel close is a teardown that happens
-	// sometimes.
-	defer func() {
-		if ctx.Err() != nil {
-			r.teardown(stack.Project)
-		}
-	}()
 
 	snapshot, waitErr := dev.Wait(ctx, r.deps.runtime, stack.Names(), dev.WaitOptions{
 		Project:  stack.Project,
@@ -286,21 +312,69 @@ func (r devRun) up(ctx context.Context, stack dev.Stack, file string) error {
 	if failing := failingServices(snapshot, stack.Names()); len(failing) > 0 {
 		return errReported
 	}
+	// The stack is up and the report says so, so it stays up. A developer
+	// working on it for the next hour is the case this command exists for.
+	usable = true
 	return nil
 }
 
 // teardown takes the stack down, on a context the caller's cancellation cannot
-// reach. A short deadline rather than none: a teardown that hangs is as bad as
-// one that does not run, and the developer is already waiting on a Ctrl-C.
+// reach — a teardown on a cancelled context is a teardown that does not happen,
+// and the difference is four containers a developer has to clean up by hand.
+//
+// It also checks. An interrupt kills the `docker compose up` client, but the
+// daemon keeps working: containers it had already been told to create arrive
+// after the client is gone, so a `down` issued the instant the client died
+// removes the network and misses the containers. So the teardown asks what is
+// left and repeats itself while there is something left, for as long as
+// teardownTimeout allows. The volumes stay: they are the developer's data, and a
+// stack that stopped or failed to start is not a reason to throw it away.
 func (r devRun) teardown(project string) {
 	fmt.Fprintf(r.env.Stdout, "\nstopping %s\n", project)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), r.deps.teardownBudget)
 	defer cancel()
-	if err := r.deps.runtime.Down(ctx, project); err != nil {
-		fmt.Fprintf(r.env.Stdout, "%s could not be stopped: %v\n", project, err)
-		return
+
+	for {
+		if err := r.deps.runtime.Down(ctx, project); err != nil {
+			fmt.Fprintf(r.env.Stdout, "%s could not be stopped: %v\n", project, err)
+			return
+		}
+		left, err := r.deps.runtime.Snapshot(ctx, project)
+		if err != nil || len(left) == 0 {
+			break
+		}
+		if ctx.Err() != nil {
+			fmt.Fprintf(r.env.Stdout, "%s is still running %d service(s); run caf dev and interrupt again, or stop them by hand\n",
+				project, len(left))
+			return
+		}
+		if err := r.deps.sleep(ctx, teardownRetry); err != nil {
+			fmt.Fprintf(r.env.Stdout, "%s is still running %d service(s); stop it by hand\n", project, len(left))
+			return
+		}
 	}
 	fmt.Fprintf(r.env.Stdout, "%s stopped\n", project)
+}
+
+// teardownTimeout and teardownRetry bound the check loop. The bound is short
+// because a developer is already standing there after a Ctrl-C, and a teardown
+// that takes a minute is a teardown they will kill.
+const (
+	teardownTimeout = 15 * time.Second
+	teardownRetry   = 500 * time.Millisecond
+)
+
+// sleepCtx is the real wait: it returns as soon as the context is done, so a
+// teardown that is already out of time does not sit through one more interval.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // failingServices are the services that settled but are not up. A service with

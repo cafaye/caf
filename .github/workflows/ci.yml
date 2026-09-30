@@ -49,14 +49,16 @@ jobs:
   #
   # KNOWN RED ON ARRIVAL: the `lint` step of this job does not pass on master
   # today. golangci-lint's default linter set finds 13 unchecked errors, all
-  # errcheck, in output and help rendering (`fmt.Fprint` into a tabwriter) plus
-  # two `defer file.Close()`. Reproduce with `golangci-lint run ./...` in a
-  # clone; `go vet ./...` and `bin/prime` are both clean. The two companion
-  # jobs below are green, and `go test -race` and the coverage gate in this job
+  # errcheck: six `fmt.Fprint`/`Fprintf` into a command's own output, three
+  # `tabwriter.Flush`, one `defer file.Close`, and three in test code. Reproduce
+  # with `golangci-lint run ./...` in a clone — this repository ships no
+  # `.golangci.yml`, so that is the default set, not kit's stricter one, which
+  # finds 24. `go vet ./...` and `bin/prime` are both clean. The two companion
+  # jobs below are green, and this job's build, `go test -race` and coverage gate
   # are green, so the failure is named rather than inferred — but read the `ci`
-  # check as "builds, vets, tests and covers", not "lints". Fixing the 13 is its
-  # own packet; it changes error handling in internal/cli and internal/dev and
-  # so needs its own tests.
+  # check as "builds, tests and covers", and treat its lint step as known-red.
+  # Fixing the 13 changes error handling in internal/cli and internal/dev, so it
+  # is its own packet and not a rider here.
   ci:
     name: 'ci (kit: go)'
     uses: cafaye/kit/.github/workflows/ci.reusable.yml@master

@@ -2,21 +2,21 @@
 name: courier
 description: Transactional email, push delivery, notification preferences, outbound webhooks.
 language: elixir
-core: ~0.1.0
+core: ~0.2.0
 
 exposes:
   events:
-    - email.queued
-    - email.delivered
-    - email.bounced
-    - email.complained
-    - notification.suppressed
+    - courier.email.queued
+    - courier.email.delivered
+    - courier.email.bounced
+    - courier.email.complained
+    - courier.notification.suppressed
 
 consumes:
-  - member.invited
-  - user.created
-  - subscription.started
-  - payment.succeeded
+  - identity.member.invited
+  - identity.user.created
+  - billing.subscription.started
+  - billing.payment.succeeded
 
 dependencies:
   - name: identity

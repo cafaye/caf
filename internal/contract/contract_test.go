@@ -119,14 +119,14 @@ func TestCheckReportsCrossFieldViolations(t *testing.T) {
 			file:        "invalid/self-consume.cafaye.yml",
 			wantKeyword: RuleNoSelfConsume,
 			wantPath:    "consumes/0",
-			wantMessage: `"invoice.created" is published by this service and must not be in consumes; react in-process instead of paying for a bus`,
+			wantMessage: `"billing.invoice.created" is published by this service and must not be in consumes; react in-process instead of paying for a bus`,
 		},
 		{
-			name:        "a long-form event type carries its own service prefix",
+			name:        "a published event type carries its own service prefix",
 			file:        "invalid/foreign-long-event.cafaye.yml",
 			wantKeyword: RuleEventPrefix,
 			wantPath:    "exposes/events/1",
-			wantMessage: `"identity.api_key.created" is a long-form event type and must start with this service's own name (billing)`,
+			wantMessage: `"identity.api_key.created" must start with this service's own name (billing)`,
 		},
 		{
 			name:        "a declared contract surface is a real one",
@@ -314,24 +314,31 @@ func TestManifestFacts(t *testing.T) {
 			file:     "valid/identity.cafaye.yml",
 			wantName: "identity",
 			wantPublish: []string{
-				"user.created", "user.email_verified", "account.created", "member.invited",
-				"member.joined", "member.removed", "member.role_changed", "mfa.enabled",
-				"mfa.disabled", "session.revoked", "identity.api_key.created", "identity.api_key.revoked",
+				"identity.user.created", "identity.user.email_verified", "identity.account.created",
+				"identity.member.invited", "identity.member.joined", "identity.member.removed",
+				"identity.member.role_changed", "identity.mfa.enabled", "identity.mfa.disabled",
+				"identity.session.revoked", "identity.api_key.created", "identity.api_key.revoked",
 			},
 			wantAPI: true,
 		},
 		{
-			name:        "a worker",
-			file:        "valid/worker.cafaye.yml",
-			wantName:    "courier",
-			wantPublish: []string{"email.queued", "email.delivered", "email.bounced", "email.complained", "notification.suppressed"},
-			wantConsume: []string{"member.invited", "user.created", "subscription.started", "payment.succeeded"},
+			name:     "a worker",
+			file:     "valid/worker.cafaye.yml",
+			wantName: "courier",
+			wantPublish: []string{
+				"courier.email.queued", "courier.email.delivered", "courier.email.bounced",
+				"courier.email.complained", "courier.notification.suppressed",
+			},
+			wantConsume: []string{
+				"identity.member.invited", "identity.user.created",
+				"billing.subscription.started", "billing.payment.succeeded",
+			},
 		},
 		{
 			name:        "a library",
 			file:        "valid/worker-only.cafaye.yml",
 			wantName:    "darkroom",
-			wantConsume: []string{"account.created", "member.role_changed"},
+			wantConsume: []string{"identity.account.created", "identity.member.role_changed"},
 		},
 		{
 			name:     "core itself",
@@ -367,10 +374,10 @@ func TestEveryCoreConstraintResolves(t *testing.T) {
 		file string
 		want string
 	}{
-		{file: "valid/identity.cafaye.yml", want: "^0.1.0"},
-		{file: "valid/worker.cafaye.yml", want: "~0.1.0"},
-		{file: "valid/worker-only.cafaye.yml", want: "0.1.0"},
-		{file: "valid/spec.cafaye.yml", want: "^0.1.0"},
+		{file: "valid/identity.cafaye.yml", want: "^0.2.0"},
+		{file: "valid/worker.cafaye.yml", want: "~0.2.0"},
+		{file: "valid/worker-only.cafaye.yml", want: "0.2.0"},
+		{file: "valid/spec.cafaye.yml", want: "^0.2.0"},
 	}
 
 	for _, tt := range tests {
@@ -398,7 +405,7 @@ func TestEveryCoreConstraintResolves(t *testing.T) {
 func TestSchemaAcceptedConstraintFormsAllParse(t *testing.T) {
 	forms := []string{
 		"0.1.0", "1.2.3", "10.20.30", "^1.2.3", "~1.2.3", ">=1.2.3",
-		"^0.1.0", "~0.1.0", ">=0.0.1",
+		"^0.1.0", "~0.1.0", ">=0.0.1", "^0.2.0", "~0.2.0", "0.2.0",
 	}
 
 	for _, form := range forms {
@@ -484,7 +491,7 @@ func TestVendoredSchemaPinsTheEventTypePattern(t *testing.T) {
 		{
 			name: "eventType",
 			got:  schema.Defs.EventType.Pattern,
-			want: `^[a-z][a-z0-9]*(_[a-z0-9]+)*(\.[a-z][a-z0-9]*(_[a-z0-9]+)*){1,2}$`,
+			want: `^[a-z][a-z0-9]*(-[a-z0-9]+)*\.[a-z][a-z0-9]*(_[a-z0-9]+)*\.[a-z][a-z0-9]*(_[a-z0-9]+)*$`,
 		},
 		{
 			name: "serviceName",

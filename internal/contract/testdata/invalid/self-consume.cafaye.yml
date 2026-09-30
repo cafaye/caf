@@ -1,25 +1,27 @@
 # EXPECTED FAILURE — the JSON Schema accepts this file; the caf cross-field
 # rules in docs/manifest-conventions.md do not.
 #
-# Rule: a service never consumes its own events. billing publishes
-# invoice.created and also subscribes to it, which is a bus round trip to
-# itself. If it needs to react to its own output it should call itself
+# Rule 2: a service never consumes its own events. billing publishes
+# billing.invoice.created and also subscribes to it, which is a bus round trip
+# to itself. If it needs to react to its own output it should call itself
 # in-process.
 #
-# Not a core example: core ships this rule as a review rule plus an assertion
-# over its own examples. caf-02 made it a lint rule, and this file is the
-# fixture that pins it.
+# Note what makes this fixture worth having under core v0.2: the schema
+# requires three segments, and rule 1 would have caught the type if it were
+# missing its prefix. Here the prefix is right, the segments are right, and
+# the manifest is still a bug — which is precisely the part no schema keyword
+# can see.
 name: billing
 description: A manifest that listens to its own queue.
 language: ruby
-core: ^0.1.0
+core: ^0.2.0
 
 exposes:
   events:
-    - invoice.created
+    - billing.invoice.created
 
 consumes:
-  - invoice.created
+  - billing.invoice.created
 
 repository:
   url: git@github.com:cafaye/billing.git

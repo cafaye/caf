@@ -5,7 +5,7 @@
 // A manifest (`cafaye.yml`) is YAML, but the contract it is written against is
 // a JSON Schema owned by cafaye/core. So this package is three layers:
 //
-//	schemas/manifest-0.1.json   a pinned copy of core's schema
+//	schemas/manifest-0.2.json   a pinned copy of core's schema
 //	Parse + Check               the manifest, and every rule it breaks
 //	Lint                        a tree of manifests, one Finding each
 //
@@ -33,13 +33,17 @@
 //
 // # The vendored schema
 //
-// `schemas/manifest-0.1.json` is a byte-for-byte copy of
+// `schemas/manifest-0.2.json` is a byte-for-byte copy of
 // `schemas/cafaye.manifest.schema.json` from cafaye/core at commit
-// f496ba70ef87773e065bac45706712f954821a85, the sha256 of the copy is pinned in
+// 3340e0f3171e09750f43e9f2974a3efb00f0ed82, the sha256 of the copy is pinned in
 // schema_test.go, and schemas/README.md holds the refresh procedure. caf never
 // fetches it: a validator that downloads the schema it validates against gives
 // a different answer on a different day, and cannot run on an air-gapped CI
 // runner (AGENTS.md: no network).
+//
+// The file is named for the spec version it pins, not for the caf version that
+// shipped it, because the interesting fact about a pin is which contract it
+// enforces.
 //
 // # The rules, and where each one lives
 //
@@ -48,4 +52,22 @@
 // can do, and they are documented in core's docs/manifest-conventions.md under
 // "Rules the schema cannot state". They are named with a `convention.` prefix
 // so a caller can tell a caf rule from a schema keyword by string alone.
+//
+// # What is deliberately not here
+//
+// core lists six such rules. Three are implemented. The other three are not,
+// and each for a reason a later packet can revisit:
+//
+//   - "any service that serves or receives traffic declares exposes" — the
+//     undecidable half. No manifest field says whether a repository serves
+//     traffic, and guessing rejects core's own darkroom (consumes events, no
+//     exposes) and courier (publishes events, no exposes.api). The decidable
+//     half is `convention.declares-surface`.
+//   - "dependencies are services, not packages" — the schema already pins
+//     every dependency to a cafaye service name; the rule is about intent, and
+//     nothing in the document expresses it.
+//   - "every consumed type exists in the core catalog" — needs the catalog,
+//     which core ships as a table in docs/event-naming.md, not as data. Until
+//     core publishes it as a machine-readable file, a linter can only check a
+//     repository against itself.
 package contract

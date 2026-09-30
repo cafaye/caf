@@ -14,7 +14,7 @@
 name: core
 description: The cafaye manifest format, event envelope and contract conventions every service compiles against.
 language: spec
-core: ^0.1.0
+core: ^0.2.0
 
 repository:
   url: git@github.com:cafaye/core.git

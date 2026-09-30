@@ -361,15 +361,15 @@ func writeManifest(t *testing.T, path, content string) {
 const courierManifest = `name: courier
 description: Transactional email, push delivery, outbound webhooks.
 language: elixir
-core: ^0.1.0
+core: ^0.2.0
 
 exposes:
   events:
-    - email.queued
-    - email.delivered
+    - courier.email.queued
+    - courier.email.delivered
 
 consumes:
-  - member.invited
+  - identity.member.invited
 
 repository:
   url: git@github.com:cafaye/courier.git
@@ -384,12 +384,12 @@ owner:
 const identityManifest = `name: identity
 description: Authentication, sessions, MFA, OAuth, accounts/tenancy.
 language: go
-core: ^0.1.0
+core: ^0.2.0
 
 exposes:
   api: openapi/openapi.yaml
   events:
-    - user.created
+    - identity.user.created
     - identity.api_key.created
 
 repository:

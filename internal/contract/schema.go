@@ -16,16 +16,16 @@ import (
 // manifestSchemaJSON is core's schema, vendored. The file carries its own
 // provenance in schemas/README.md; this is the copy the compiler reads.
 //
-//go:embed schemas/manifest-0.1.json
+//go:embed schemas/manifest-0.2.json
 var manifestSchemaJSON []byte
 
 // manifestSchemaPin is the sha256 of the vendored copy as of core commit
-// f496ba7 (core-01, schema version 0.1). It exists so a hand edit fails the
+// 3340e0f (core-02, spec version 0.2). It exists so a hand edit fails the
 // suite: changing the contract caf validates against is a refresh procedure
 // with a core bump attached, never a patch.
 //
-//go:generate sh -c "shasum -a 256 internal/contract/schemas/manifest-0.1.json"
-const manifestSchemaPin = "ce5f9e514bc8aa78447083fd6461c5baea12fd5b0cb3fb2c7cf601fd56a3ae34"
+//go:generate sh -c "shasum -a 256 internal/contract/schemas/manifest-0.2.json"
+const manifestSchemaPin = "9f90b3707d39da40b2416ac815ad9127681b65c8d87e5b50879e5f7af69ef0b9"
 
 // The resource name the schema is compiled under. The schema's own $id is an
 // https URL, and nothing may be fetched to resolve it, so the document is

@@ -33,28 +33,30 @@ func (m Manifest) conventionViolations() []Violation {
 	return violations
 }
 
-// checkEventPrefixes: a published long-form event type starts with the
-// publisher's own name. `identity.api_key.created` is legal in identity and a
-// bug anywhere else, because the prefix is what tells a subscriber whose
-// contract they are reading.
+// checkEventPrefixes: a published event type starts with the publisher's own
+// name. `identity.api_key.created` is legal in identity and a bug anywhere
+// else, because the prefix is what tells a subscriber whose contract they are
+// reading.
 //
-// Only published types are checked. A consumed long-form type names its
-// publisher, and a single manifest has no way of knowing who that is — this
-// repository is not a registry.
+// Since core v0.2 every type is `<service>.<entity>.<action>` with no
+// exceptions, so this is no longer a special case for generic entities: it
+// applies to every published type, and the schema's pattern already guarantees
+// there are three segments before this runs.
+//
+// Only published types are checked. A consumed type names its *publisher*,
+// which is by definition another service, and a single manifest has no way of
+// knowing who that is — this repository is not a registry.
 func (m Manifest) checkEventPrefixes() []Violation {
 	var violations []Violation
 	for i, eventType := range m.Publishes() {
-		// The schema has already guaranteed two or three segments of
-		// lowercase snake_case by the time this runs, so counting the dots is
-		// all the grammar this needs.
-		segments := strings.Split(eventType, ".")
-		if len(segments) != 3 || segments[0] == m.ServiceName() {
+		publisher, _, _ := strings.Cut(eventType, ".")
+		if publisher == m.ServiceName() {
 			continue
 		}
 		violations = append(violations, Violation{
 			Keyword: RuleEventPrefix,
 			Path:    fmt.Sprintf("exposes/events/%d", i),
-			Message: fmt.Sprintf("%q is a long-form event type and must start with this service's own name (%s)", eventType, m.ServiceName()),
+			Message: fmt.Sprintf("%q must start with this service's own name (%s)", eventType, m.ServiceName()),
 		})
 	}
 	return violations
@@ -64,6 +66,12 @@ func (m Manifest) checkEventPrefixes() []Violation {
 // at-least-once and the bus is not free, so a service that reacts to its own
 // output should call itself in-process — which is also the only way the
 // reaction is synchronous with the thing that caused it.
+//
+// Since core v0.2 this is also the decidable half of "a consumed type names a
+// different service": every type is prefixed with its publisher, so a consumed
+// type whose prefix is this service's own name is this service. The other half
+// — that the publisher of a consumed type *exists* somewhere — needs the core
+// catalog and is not checked here.
 func (m Manifest) checkSelfConsume() []Violation {
 	published := make(map[string]bool, len(m.Publishes()))
 	for _, eventType := range m.Publishes() {

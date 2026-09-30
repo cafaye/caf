@@ -3,11 +3,11 @@
 name: darkroom
 description: Media uploads, variants and the S3 processing pipeline.
 language: rust
-core: 0.1.0
+core: 0.2.0
 
 consumes:
-  - account.created
-  - member.role_changed
+  - identity.account.created
+  - identity.member.role_changed
 
 dependencies:
   - name: identity

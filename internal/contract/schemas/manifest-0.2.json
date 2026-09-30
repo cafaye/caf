@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cafaye.com/schemas/cafaye.manifest.schema.json",
   "title": "cafaye service manifest",
-  "description": "Schema for cafaye.yml, the per-service manifest every cafaye repository carries. A manifest is the one place that declares a service's identity, its core spec constraint, the contract surface it exposes and consumes, and who owns it. Cross-field rules that JSON Schema cannot express (long event types must be prefixed by the publishing service; a service never consumes its own events; exposes.api is required for any service that serves traffic) are documented in docs/manifest-conventions.md and enforced by tests/test_specs.py.",
+  "description": "Schema for cafaye.yml, the per-service manifest every cafaye repository carries. A manifest is the one place that declares a service's identity, its core spec constraint, the contract surface it exposes and consumes, and who owns it. Cross-field rules that JSON Schema cannot express (a published event type must be prefixed by the publishing service; a service never consumes its own events; a consumed type must exist in the core catalog; exposes.api is required for any service that serves traffic) are documented in docs/manifest-conventions.md and enforced by tests/test_specs.py.",
   "type": "object",
   "additionalProperties": false,
   "required": ["name", "language", "core", "repository", "owner"],
@@ -37,7 +37,7 @@
         },
         "events": {
           "type": "array",
-          "description": "Event types this service publishes. Two- or three-segment names; see docs/event-naming.md.",
+          "description": "Event types this service publishes, as <service>.<entity>.<action>. The first segment must be this manifest's own `name`; see docs/event-naming.md.",
           "items": { "$ref": "#/$defs/eventType" },
           "uniqueItems": true
         }
@@ -45,7 +45,7 @@
     },
     "consumes": {
       "type": "array",
-      "description": "Event types this service subscribes to. Delivery is at-least-once, so every consumer must be idempotent.",
+      "description": "Event types this service subscribes to, as <service>.<entity>.<action>. The prefix names the publisher, which is never this service. Delivery is at-least-once, so every consumer must be idempotent.",
       "items": { "$ref": "#/$defs/eventType" },
       "uniqueItems": true
     },
@@ -68,10 +68,10 @@
     },
     "eventType": {
       "type": "string",
-      "description": "Event type: <entity>.<action> (2 segments) or <service>.<entity>.<action> (3 segments, mandatory when the bare entity name is generic enough to collide: key, token, event, file, job, config, webhook). Segments are lowercase snake_case.",
+      "description": "Event type: <service>.<entity>.<action>, exactly three segments. The first segment is a cafaye service name (kebab-case) and must be the publishing service's own `name`; the entity and action segments are lowercase snake_case. See docs/event-naming.md.",
       "minLength": 5,
       "maxLength": 120,
-      "pattern": "^[a-z][a-z0-9]*(_[a-z0-9]+)*(\\.[a-z][a-z0-9]*(_[a-z0-9]+)*){1,2}$"
+      "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*\\.[a-z][a-z0-9]*(_[a-z0-9]+)*\\.[a-z][a-z0-9]*(_[a-z0-9]+)*$"
     },
     "semverRange": {
       "type": "string",

@@ -21,11 +21,15 @@ const (
 	// RuleConventionPrefix marks the rules JSON Schema cannot state.
 	RuleConventionPrefix = "convention."
 
-	// RuleEventPrefix is "a published long-form event type carries its own
-	// service prefix" (docs/manifest-conventions.md, rule 1).
+	// RuleEventPrefix is "a published event type carries its own service
+	// prefix" (docs/manifest-conventions.md, rule 1). Since core v0.2 this
+	// applies to every published type: the grammar is
+	// <service>.<entity>.<action> with no exceptions.
 	RuleEventPrefix = RuleConventionPrefix + "event-prefix"
 
 	// RuleNoSelfConsume is "a service never consumes its own events" (rule 2).
+	// Since v0.2's uniform prefix it also settles the decidable half of "a
+	// consumed type names a different service".
 	RuleNoSelfConsume = RuleConventionPrefix + "no-self-consume"
 
 	// RuleDeclaresSurface is "a declared contract surface is a real one"

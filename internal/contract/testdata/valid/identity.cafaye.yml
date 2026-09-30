@@ -3,23 +3,23 @@
 name: identity
 description: Authentication, sessions, MFA, OAuth, accounts/tenancy and the OIDC provider.
 language: go
-core: ^0.1.0
+core: ^0.2.0
 
 exposes:
   api: openapi/openapi.yaml
   events:
-    - user.created
-    - user.email_verified
-    - account.created
-    - member.invited
-    - member.joined
-    - member.removed
-    - member.role_changed
-    - mfa.enabled
-    - mfa.disabled
-    - session.revoked
-    # Long form: the bare entity name "key" is generic enough to collide
-    # across services, so the publisher is spelled out. See docs/event-naming.md.
+    - identity.user.created
+    - identity.user.email_verified
+    - identity.account.created
+    - identity.member.invited
+    - identity.member.joined
+    - identity.member.removed
+    - identity.member.role_changed
+    - identity.mfa.enabled
+    - identity.mfa.disabled
+    - identity.session.revoked
+    # Same shape as the rest of the list: the publisher's own name is the first
+    # segment of every event type, generic entity or not. See docs/event-naming.md.
     - identity.api_key.created
     - identity.api_key.revoked
 

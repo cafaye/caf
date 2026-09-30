@@ -23,18 +23,18 @@ All notable changes to caf are recorded here. The format follows
   `caf init`, `caf gen` and `caf deploy` will read manifests through it rather
   than each growing its own copy.
 - The core manifest schema, vendored at
-  `internal/contract/schemas/manifest-0.1.json` as a byte-identical copy pinned
-  by sha256, with its provenance and refresh procedure in `schemas/README.md`.
-  Nothing is fetched at runtime.
+  `internal/contract/schemas/manifest-0.2.json` as a byte-identical copy of
+  core at `3340e0f` pinned by sha256, with its provenance and refresh procedure
+  in `schemas/README.md`. Nothing is fetched at runtime.
 - The three cross-field rules, named so a caf rule is never mistaken for a
-  schema keyword: `convention.event-prefix` (a published long-form event type
-  carries its own service prefix), `convention.no-self-consume` (a service
-  never consumes its own events) and `convention.declares-surface` (an
-  `exposes` that names neither an API document nor an event). The first two
-  are the generic forms of core's rules 1 and 2; the third is the decidable
-  half of rule 3 — whether a repository *serves traffic* is not expressible
-  from a manifest, and guessing it would reject core's own `darkroom` and
-  `courier` examples.
+  schema keyword: `convention.event-prefix` (a published event type carries its
+  own service prefix), `convention.no-self-consume` (a service never consumes
+  its own events) and `convention.declares-surface` (an `exposes` that names
+  neither an API document nor an event). Core documents six such rules; the
+  other three are not implemented, each for a reason recorded in the package
+  doc — "serves traffic" is not expressible from a manifest, `dependencies`
+  are already service names by schema, and the consumed-type catalog rule needs
+  a catalog core ships as prose.
 - Violations are reported in the order the fields appear in the manifest, not
   in the order the validator walked a Go map, so the first error on a line is
   the same on every run.

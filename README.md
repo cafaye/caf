@@ -119,19 +119,25 @@ all**: a tree nothing was validated in is not a pass.
 Every manifest is checked against two things:
 
 1. **The core JSON Schema**, vendored at
-   [`internal/contract/schemas/manifest-0.1.json`](internal/contract/schemas/manifest-0.1.json)
+   [`internal/contract/schemas/manifest-0.2.json`](internal/contract/schemas/manifest-0.2.json)
    — a byte-identical copy of `cafaye/core`'s schema, pinned by sha256. `caf`
    never fetches it: see [schemas/README.md](internal/contract/schemas/README.md)
-   for the provenance and the refresh procedure.
+   for the provenance, what each spec bump changes, and the refresh procedure.
 2. **The three cross-field rules** from core's
    `docs/manifest-conventions.md` that a JSON Schema cannot state, because it
    validates one field at a time and cannot compare two:
 
    | Rule | What it rejects |
    |---|---|
-   | `convention.event-prefix` | a published long-form event type that does not start with the publisher's own name |
+   | `convention.event-prefix` | a published event type that does not start with the publisher's own name |
    | `convention.no-self-consume` | a service that subscribes to an event it publishes |
    | `convention.declares-surface` | an `exposes` that names neither an OpenAPI document nor an event |
+
+core documents six such rules. The other three are not implemented, each for a
+stated reason: "serves or receives traffic" is not expressible from a manifest
+field, `dependencies` are already pinned to cafaye service names by the
+schema, and "every consumed type exists in the core catalog" needs a catalog
+that core ships as prose rather than as data.
 
 The schema is checked first and the cross-field rules only run on a document
 that passed it, because every one of them compares two fields and a document
@@ -140,10 +146,10 @@ with a field of the wrong type has nothing to compare.
 ## `caf contract resolve`
 
 ```
-$ caf contract resolve '^0.1.0' 0.1.3
-yes  ^0.1.0 allows 0.1.3: 0.1.3 is in [0.1.0, 0.2.0)
-$ caf contract resolve '^0.1.0' 0.2.0
-no   ^0.1.0 allows 0.2.0: 0.2.0 is not in [0.1.0, 0.2.0)
+$ caf contract resolve '^0.2.0' 0.2.3
+yes  ^0.2.0 allows 0.2.3: 0.2.3 is in [0.2.0, 0.3.0)
+$ caf contract resolve '^0.2.0' 0.3.0
+no   ^0.2.0 allows 0.3.0: 0.3.0 is not in [0.2.0, 0.3.0)
 ```
 
 The constraint is `MAJOR.MINOR.PATCH`, optionally prefixed:
@@ -151,7 +157,7 @@ The constraint is `MAJOR.MINOR.PATCH`, optionally prefixed:
 | Form | Meaning |
 |---|---|
 | `1.2.3` | exactly |
-| `^1.2.3` | `>=1.2.3 <2.0.0`; on a 0.x service `^0.1.0` is `>=0.1.0 <0.2.0` |
+| `^1.2.3` | `>=1.2.3 <2.0.0`; on a 0.x service `^0.2.0` is `>=0.2.0 <0.3.0` |
 | `~1.2.3` | `>=1.2.3 <1.3.0`, the minor pinned |
 | `>=1.2.3` | any version at or above it |
 

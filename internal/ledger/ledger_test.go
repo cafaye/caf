@@ -384,3 +384,13 @@ func entryFiles(t *testing.T, dir string) []string {
 	}
 	return out
 }
+
+// mustEntries reads a ledger's rows, failing the test if it cannot.
+func mustEntries(t *testing.T, l *Ledger) []Entry {
+	t.Helper()
+	entries, err := l.Entries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entries
+}

@@ -67,7 +67,10 @@ type Reservation struct {
 
 	lock   *ledger.Lock
 	ledger *ledger.Ledger
-	entry  ledger.Entry
+	// Entry is the ledger row this reservation filed. It is exported because
+	// Release has to clear it, and because a caller that took a named port files
+	// its own — with the session and generation it is bound to.
+	Entry ledger.Entry
 }
 
 // Release gives the port back and clears the ledger row.
@@ -75,15 +78,23 @@ type Reservation struct {
 // It is safe to call twice, and it is safe to never call: the kernel releases
 // the lock when the process exits, which is the property that makes a caf killed
 // mid-session leave nothing stranded.
-func (r Reservation) Release() error {
+//
+// The receiver is a pointer so that a nil *Reservation is a no-op rather than a
+// dereference. A caller holding a pointer — a slice element, a field — would
+// otherwise panic on the one path that is supposed to be forgiving, and a
+// deferred Release on a zero value is normal Go.
+func (r *Reservation) Release() error {
+	if r == nil {
+		return nil
+	}
 	var firstErr error
 	if r.lock != nil {
 		if err := r.lock.Release(); err != nil {
 			firstErr = err
 		}
 	}
-	if r.ledger != nil && r.entry.Session != "" {
-		if err := r.ledger.Release(r.entry.Session, r.entry.Gen); err != nil && firstErr == nil {
+	if r.ledger != nil && r.Entry.Session != "" {
+		if err := r.ledger.Release(r.Entry.Session, r.Entry.Gen); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -106,14 +117,14 @@ func PortLockName(port int) string { return "port-" + strconv.Itoa(port) }
 // is chosen every time, so two runs of the same project in the same block get
 // the same ports, and a diff between two runs is a diff between two manifests
 // rather than a diff between two allocations.
-func (r *Registry) Reserve(session string, gen, n int) ([]Reservation, error) {
+func (r *Registry) Reserve(session string, gen, n int) ([]*Reservation, error) {
 	return r.ReserveContext(context.Background(), session, gen, n)
 }
 
 // ReserveContext is Reserve with a context. The context is checked before each
 // port, because a reservation loop that runs away on a cancelled context is a
 // loop that holds a thousand locks.
-func (r *Registry) ReserveContext(ctx context.Context, session string, gen, n int) ([]Reservation, error) {
+func (r *Registry) ReserveContext(ctx context.Context, session string, gen, n int) ([]*Reservation, error) {
 	if n < 1 {
 		return nil, nil
 	}
@@ -121,7 +132,7 @@ func (r *Registry) ReserveContext(ctx context.Context, session string, gen, n in
 		return nil, fmt.Errorf("%w: asked for %d ports and %s has %d", ErrExhausted, n, r.block, r.block.Size())
 	}
 
-	held := make([]Reservation, 0, n)
+	held := make([]*Reservation, 0, n)
 	release := func() {
 		for _, reservation := range held {
 			_ = reservation.Release()
@@ -156,9 +167,9 @@ func (r *Registry) ReserveContext(ctx context.Context, session string, gen, n in
 // TryReserve reserves one port the caller named, and refuses rather than moving.
 // `caf dev -port N` is a developer's decision: caf checks it, says what is
 // there, and does not silently publish somewhere else.
-func (r *Registry) TryReserve(port int) (Reservation, error) {
+func (r *Registry) TryReserve(port int) (*Reservation, error) {
 	if !r.block.Contains(port) {
-		return Reservation{}, fmt.Errorf("%w: %d is not in %s; caf publishes from the block or not at all (that is how 21101 and 55432 happened)",
+		return nil, fmt.Errorf("%w: %d is not in %s; caf publishes from the block or not at all (that is how 21101 and 55432 happened)",
 			ErrOutsideBlock, port, r.block)
 	}
 	return r.take(context.Background(), "", 0, port)
@@ -170,31 +181,31 @@ func (r *Registry) TryReserve(port int) (Reservation, error) {
 // racing for the same port are serialised by the kernel rather than by
 // whoever's probe happened to run last. A probe that answered first and locked
 // second would leave a window in which both had said yes.
-func (r *Registry) take(ctx context.Context, session string, gen, port int) (Reservation, error) {
+func (r *Registry) take(ctx context.Context, session string, gen, port int) (*Reservation, error) {
 	if err := ctx.Err(); err != nil {
-		return Reservation{}, err
+		return nil, err
 	}
 
 	lock, err := r.ledger.TryLock(PortLockName(port))
 	if err != nil {
 		if errors.Is(err, ledger.ErrHeld) {
-			return Reservation{}, fmt.Errorf("%w: %d", ErrHeld, port)
+			return nil, fmt.Errorf("%w: %d", ErrHeld, port)
 		}
-		return Reservation{}, fmt.Errorf("reserve %d: %w", port, err)
+		return nil, fmt.Errorf("reserve %d: %w", port, err)
 	}
 
 	free, probeErr := r.prober.Free(port)
 	if probeErr != nil || !free {
 		if err := lock.Release(); err != nil {
-			return Reservation{}, err
+			return nil, err
 		}
 		if probeErr != nil {
-			return Reservation{}, probeErr
+			return nil, probeErr
 		}
-		return Reservation{}, fmt.Errorf("%w: %d (%s)", ErrBusy, port, r.holderDetail(port))
+		return nil, fmt.Errorf("%w: %d (%s)", ErrBusy, port, r.holderDetail(port))
 	}
 
-	reservation := Reservation{Port: port, Session: session, Gen: gen, lock: lock, ledger: r.ledger}
+	reservation := &Reservation{Port: port, Session: session, Gen: gen, lock: lock, ledger: r.ledger}
 	if session != "" {
 		// The row is written before anything can act on the port, which is the
 		// same ordering rule the stack entries follow: a caf killed here leaves a
@@ -210,13 +221,13 @@ func (r *Registry) take(ctx context.Context, session string, gen, port int) (Res
 		})
 		if err != nil {
 			if releaseErr := lock.Release(); releaseErr != nil {
-				return Reservation{}, releaseErr
+				return nil, releaseErr
 			}
-			return Reservation{}, err
+			return nil, err
 		}
-		reservation.entry = entry
+		reservation.Entry = entry
 		if err := lock.Record(fmt.Sprintf("port=%d session=%s gen=%d", port, session, gen)); err != nil {
-			return Reservation{}, err
+			return nil, err
 		}
 	}
 	return reservation, nil
@@ -227,4 +238,25 @@ func (r *Registry) take(ctx context.Context, session string, gen, port int) (Res
 // sends somebody to `lsof`; the exact command is here instead.
 func (r *Registry) holderDetail(port int) string {
 	return fmt.Sprintf("check it with: lsof -nP -iTCP:%d -sTCP:LISTEN", port)
+}
+
+// LedgerDir is where this registry's locks and entries live. It is exposed so a
+// caller that has to sweep the same ledger — `caf reclaim`, in a test — can reach
+// it rather than re-deriving the path and getting it subtly wrong.
+func (r *Registry) LedgerDir() string { return r.ledger.Dir() }
+
+// WithEntry files the ledger row for a reservation, for a caller that took a
+// named port rather than picking one. TryReserve does not know the session, so
+// the row is attached afterwards — and the row is written before the caller can
+// act on the port, which is the ordering rule the whole ledger is built on.
+func (r *Reservation) WithEntry(e ledger.Entry) (*Reservation, error) {
+	stored, err := r.ledger.Reserve(e)
+	if err != nil {
+		return r, err
+	}
+	r.Entry = stored
+	if err := r.lock.Record(fmt.Sprintf("port=%d session=%s gen=%d", r.Port, stored.Session, stored.Gen)); err != nil {
+		return r, err
+	}
+	return r, nil
 }

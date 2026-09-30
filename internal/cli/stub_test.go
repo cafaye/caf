@@ -31,7 +31,9 @@ var stubCommands = []stubCommand{
 
 // workingCommands are the subcommands that are not stubs because they already
 // work. They are pinned by their own behavior tests.
-var workingCommands = []string{"contract", "dev", "doctor", "mcp", "version"}
+// A verb that groups others is dispatched by its parent's Run and is never in
+// this list, so `env` is here and `env up` is not.
+var workingCommands = []string{"contract", "dev", "doctor", "env", "mcp", "reclaim", "version"}
 
 // invocation builds a valid command line for a stub: its flags, then the
 // positional arguments it wants.

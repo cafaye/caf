@@ -14,6 +14,13 @@ import (
 // becomes a thing people stop running.
 var ErrNoRuntime = errors.New("no container runtime")
 
+// ErrGone is a resource that was listed and is not there. It is its own
+// sentinel because a list and a remove are two round trips and a container that
+// exited between them is a `:missing`, not a `:failed` — and counting it as a
+// failure would keep a ledger entry alive for something that is already gone,
+// which is how people learn to distrust the sweeper.
+var ErrGone = errors.New("already gone")
+
 // Resource is one thing on the machine. Containers and volumes have the same
 // shape because the sweep treats them the same way and differs only in the order
 // it does them in.
@@ -112,6 +119,11 @@ type Report struct {
 	Released   int
 	DryRun     bool
 	EntryCount int
+	// Ledger is where the sweep read from, so "nothing to reclaim" can name the
+	// place it looked. "Nothing to reclaim" and "caf reclaim looked somewhere
+	// else" are different sentences and a report that cannot tell them apart is
+	// the report that sends somebody to check their CAF_LEDGER_DIR.
+	Ledger string
 }
 
 // Planned is how many resources the sweep would touch. In a dry run that is the
@@ -127,13 +139,22 @@ func (r Report) Entries() int { return r.Released }
 func (r Report) Failures() int { return r.Containers.Failed + r.Volumes.Failed }
 
 // Summary is the one line a person reads first.
+//
+// An empty sweep says "nothing to reclaim" whatever the mode. A dry run over an
+// empty ledger has nothing to plan, and printing the dry-run sentence instead
+// reads as a sweep that found nothing to do — which is a different claim, and the
+// one that sends somebody looking for a filter that was too narrow.
 func (r Report) Summary() string {
+	// The emptiness test looks at the tallies and not only at the action list.
+	// A report that dropped two containers and had no action rows is not a
+	// report about nothing, and the counts are the numbers a reader checks.
+	if r.Planned() == 0 && r.Ports == 0 && r.PortsHeld == 0 &&
+		r.Containers == (Counts{}) && r.Volumes == (Counts{}) {
+		return fmt.Sprintf("nothing to reclaim: the ledger at %s holds no entries", r.Ledger)
+	}
 	if r.DryRun {
 		return fmt.Sprintf("dry run: %d resource(s) in %d ledger entr(ies), %d container(s), %d volume(s); nothing was removed and no entry was released",
 			len(r.Actions), r.EntryCount, countMatching(r.Actions, "container"), countMatching(r.Actions, "volume"))
-	}
-	if r.Planned() == 0 && r.Ports == 0 && r.PortsHeld == 0 {
-		return "nothing to reclaim: the ledger holds no entries"
 	}
 	s := fmt.Sprintf("reclaimed: %d container(s) %s, %d volume(s) %s; released %d ledger entr(ies)",
 		r.Containers.Dropped, r.Containers.tally(), r.Volumes.Dropped, r.Volumes.tally(), r.Released)
@@ -170,7 +191,7 @@ func countMatching(actions []Action, kind string) int {
 // before containers reclaims nothing and reports success, which is how a 48 MiB
 // volume per stack becomes 7.4 GiB.
 func Sweep(ctx context.Context, l *Ledger, docker Docker, opts SweepOptions) (Report, error) {
-	report := Report{DryRun: opts.DryRun}
+	report := Report{DryRun: opts.DryRun, Ledger: l.Dir()}
 
 	entries, err := l.Entries()
 	if err != nil {
@@ -333,6 +354,9 @@ func addAction(report *Report, action Action, entry Entry) {
 
 func removeContainer(ctx context.Context, docker Docker, id string) (Outcome, string) {
 	if err := docker.RemoveContainer(ctx, id); err != nil {
+		if errors.Is(err, ErrGone) {
+			return Missing, "it exited between the list and the remove"
+		}
 		return Failed, firstLine(err)
 	}
 	return Dropped, ""
@@ -340,6 +364,9 @@ func removeContainer(ctx context.Context, docker Docker, id string) (Outcome, st
 
 func removeVolume(ctx context.Context, docker Docker, id string) (Outcome, string) {
 	if err := docker.RemoveVolume(ctx, id); err != nil {
+		if errors.Is(err, ErrGone) {
+			return Missing, "it was removed between the list and the remove"
+		}
 		return Failed, firstLine(err)
 	}
 	return Dropped, ""

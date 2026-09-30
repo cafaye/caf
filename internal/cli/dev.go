@@ -194,7 +194,7 @@ func (r devRun) run() error {
 	if len(stack.Services) == 0 {
 		return nil
 	}
-	return r.up(ctxOrBackground(r.env), stack, file)
+	return r.up(ctxOrBackground(&r.env), stack, file)
 }
 
 // loadRegistry resolves the catalog the manifest's dependencies are resolved
@@ -482,12 +482,14 @@ func runtimeBinary() string {
 	return "docker"
 }
 
-// ctxOrBackground is the context a run carries. `Env.Context` is optional so a
-// caller that only wants an exit code can pass nothing, and the router fills in
-// a background context.
-func ctxOrBackground(env Env) context.Context {
-	if env.Context != nil {
-		return env.Context
+// ctxOrBackground is the context a run carries, from a pointer because a caller
+// may not have an Env at all. `Env.Context` is optional so a caller that only
+// wants an exit code can pass nothing, and the router fills in a background
+// context; a nil Env takes the same route, because a command whose sweep
+// panics on a missing Env is a command that cannot be driven by a test.
+func ctxOrBackground(env *Env) context.Context {
+	if env == nil || env.Context == nil {
+		return context.Background()
 	}
-	return context.Background()
+	return env.Context
 }

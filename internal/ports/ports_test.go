@@ -64,6 +64,11 @@ func TestTheBlockIsOneThousandFifteenThousandPorts(t *testing.T) {
 // only CAF itself is asserted to be 15000-15999.
 var scratch = Block{42000, 42099}
 
+// testBlock is the block the registry cases reserve in. It is a sub-range of
+// scratch so a case that needs a handful of ports can say "the first three" and
+// mean it.
+var testBlock = Block{42000, 42009}
+
 // An exhausted block has to say which block it meant, because the sprawl this
 // exists to stop (15001, 16001, 21101, 55432) is what a port outside the block
 // looks like afterwards, and "could not find a free port" is not enough to act

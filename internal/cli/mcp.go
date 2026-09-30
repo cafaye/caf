@@ -167,31 +167,46 @@ type mcpTools struct {
 // structured-content support. The types are the schema: a field's doc comment
 // is its description and there is no second copy to fall out of date.
 
-// doctorFacts is `caf doctor` as a value: the two tables the command prints,
+// doctorFacts is `caf doctor` as a value: the three tables the command prints,
 // as fields an agent reads rather than as text it parses.
 type doctorFacts struct {
-	Tools       []doctorTool  `json:"tools"`
-	ToolsOK     int           `json:"tools_ok"`
-	ToolsTotal  int           `json:"tools_total"`
-	Project     string        `json:"project,omitempty"`
-	ProjectName string        `json:"project_name,omitempty"`
-	Checks      []doctorCheck `json:"checks,omitempty"`
-	PlanError   string        `json:"plan_error,omitempty"`
-	Note        string        `json:"note,omitempty"`
+	Tools      []doctorTool `json:"tools"`
+	ToolsOK    int          `json:"tools_ok"`
+	ToolsTotal int          `json:"tools_total"`
+	Project    string       `json:"project,omitempty"`
+	// PlanError is set when the project could not be read or planned at all. It
+	// is a field rather than a check row because the difference matters to an
+	// agent: a failing check is a fact about the machine, and an unreadable
+	// project means there were no machine facts to gather.
+	PlanError string        `json:"plan_error,omitempty"`
+	Checks    []doctorCheck `json:"checks,omitempty"`
+	// Verdict is the tri-state reduced to one word: ok, warn or fail. An agent
+	// that has to work out the verdict by counting rows will get it wrong, and a
+	// tool that reports a machine as fine when one row failed is worse than no
+	// tool.
+	Verdict string `json:"verdict"`
+	Note    string `json:"note,omitempty"`
 }
 
-// doctorTool is one row of the toolchain table.
+// doctorTool is one row of the toolchain table. The status is the row's own
+// two-word value rather than the tri-state, because this table is a list of
+// binaries and a binary is either on PATH or not; the tri-state lives on the
+// checks, where a fact can be wrong in more than one way.
 type doctorTool struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
 	Path   string `json:"path,omitempty"`
 }
 
-// doctorCheck is one row of the project section.
+// doctorCheck is one row of the project or reclamation section. The state is
+// the tri-state word and Fix is the command, because an agent acting on a
+// machine needs the command at least as much as a person does — and an agent
+// guessing at one is how a machine ends up in a state nobody chose.
 type doctorCheck struct {
 	Name   string `json:"name"`
-	Status string `json:"status"`
+	State  string `json:"state"`
 	Detail string `json:"detail,omitempty"`
+	Fix    string `json:"fix,omitempty"`
 }
 
 // manifestFacts is what a cafaye.yml declares, and what the API document it
@@ -316,55 +331,79 @@ type devSvcState struct {
 func (t *mcpTools) doctor() mcp.Tool[doctorArgs, doctorFacts] {
 	return mcp.Tool[doctorArgs, doctorFacts]{
 		Name: "caf_doctor",
-		Description: "Report which cafaye toolchains this machine has, and whether it can run a project. " +
-			"Needs nothing: both halves work on any directory. Returns every toolchain row, and for the project " +
-			"whether the container runtime answers, whether the machine has the memory and CPUs a local stack needs, " +
-			"and whether the ports the stack publishes are free. " +
+		Description: "Report which cafaye toolchains this machine has, whether it can run a project, and whether it " +
+			"has un-reclaimed local state. " +
+			"Needs nothing: every section works on any directory. Returns the toolchain rows, then one check per " +
+			"fact about the project and the machine, then one about the reclamation ledger. " +
+			"Each check is ok, warn or fail, and each one that is not ok carries the exact command that fixes it. " +
+			"The verdict field is the whole report reduced to one word; a fail means caf doctor would exit 1. " +
 			"Does not start, stop or build anything, and does not fix what it finds: read the rows and act on them. " +
-			"Pass tools_only to skip the project half.",
+			"Pass tools_only to skip the project and reclamation halves.",
 		ReadOnly: true,
 		Input:    doctorArgs{},
 		Handler:  t.runDoctor,
 	}
 }
 
-func (t *mcpTools) runDoctor(ctx context.Context, args doctorArgs) (doctorFacts, error) {
-	d := newDoctor(t.env, t.registry)
+func (t *mcpTools) runDoctor(_ context.Context, args doctorArgs) (doctorFacts, error) {
+	d := newDoctor(t.env, t.registry, "")
 	d.toolsOnly = args.ToolsOnly
 	d.project = args.Project
 	if d.project == "" {
 		d.project = "."
 	}
+	d.projectDir = d.project
+	if d.out == nil {
+		d.out = io.Discard
+	}
+	d.resolveProject()
 
 	report := doctorFacts{Project: d.project}
-	for _, row := range d.check() {
-		report.Tools = append(report.Tools, doctorTool{Name: row.Name, Status: row.Status(), Path: row.Path})
-		if row.OK() {
+	// The toolchain table is still one row per binary: an agent asking "is ruby
+	// installed" wants the path, and a tri-state per binary would be a worse
+	// answer than the two words it already had.
+	for _, t := range tools {
+		row := doctorTool{Name: t.Name, Status: "missing", Path: d.find(t)}
+		if row.Path != "" {
+			row.Status = "ok"
 			report.ToolsOK++
 		}
+		report.Tools = append(report.Tools, row)
 	}
 	report.ToolsTotal = len(report.Tools)
+
 	if args.ToolsOnly {
-		report.Note = "tools_only was set, so the project checks were not run."
+		report.Verdict = "ok"
+		report.Note = "tools_only was set, so the project and reclamation checks were not run."
 		return report, nil
 	}
 
-	env := d.environment()
-	if env == nil {
-		report.Note = "no project was checked."
-		return report, nil
+	if d.planErr != nil {
+		// A project that could not be read is reported as itself, in the field
+		// that says so, rather than as a set of failing checks about a machine
+		// the tool never managed to look at.
+		report.PlanError = d.planErr.Error()
 	}
-	report.ProjectName = env.project.Manifest.ServiceName()
-	if env.planErr != nil {
-		// A project or plan that could not be made is reported as itself, in
-		// the field that says so, rather than as an empty set of passing checks.
-		report.PlanError = env.planErr.Error()
-		return report, nil
+	bySection := map[string][]Finding{}
+	for _, check := range doctorChecks {
+		if check.Section == sectionToolchain {
+			continue
+		}
+		bySection[check.Section] = append(bySection[check.Section], check.Probe(d))
 	}
-	report.Checks = make([]doctorCheck, 0, len(env.checks))
-	for _, check := range env.checks {
-		report.Checks = append(report.Checks, doctorCheck{Name: check.Name, Status: check.Status, Detail: check.Detail})
+	var all []Finding
+	for _, section := range []string{sectionProject, sectionReclamation} {
+		for _, finding := range bySection[section] {
+			report.Checks = append(report.Checks, doctorCheck{
+				Name:   finding.Name,
+				State:  finding.Severity.String(),
+				Detail: finding.Detail,
+				Fix:    finding.Fix,
+			})
+			all = append(all, finding)
+		}
 	}
+	report.Verdict = Verdict(all).String()
 	return report, nil
 }
 

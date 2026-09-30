@@ -152,6 +152,23 @@ func (e *Environment) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// Enumerable is the optional half of a registry: the names of everything it
+// holds.
+//
+// It is a separate interface from Registry on purpose. Building a stack asks
+// about services the manifest names, which Resolve answers, and a network
+// registry can answer that from an index or a lookup without holding the whole
+// catalog in memory. Reporting on a registry — what does the catalog say — is a
+// different question that needs the whole list, so it is asked of a different
+// interface and a registry that cannot answer it says so rather than reporting
+// a short list as if it were the whole one.
+type Enumerable interface {
+	// Names are every service in the registry. Sorted, because a map iterates
+	// in an order that changes between runs and a report whose order changes
+	// between two reads of one catalog is not a report.
+	Names() []string
+}
+
 // Catalog is a registry held in memory. It is the offline default, the thing a
 // local catalog file decodes into, and the shape a registry response decodes
 // into, so a test and a developer's terminal see the same thing.
@@ -161,6 +178,16 @@ type Catalog map[string]Entry
 func (c Catalog) Resolve(name string) (Entry, bool) {
 	entry, found := c[name]
 	return entry, found
+}
+
+// Names implements Enumerable.
+func (c Catalog) Names() []string {
+	names := make([]string, 0, len(c))
+	for _, entry := range c {
+		names = append(names, entry.Name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // ReadCatalog decodes a registry document: one JSON object keyed by service

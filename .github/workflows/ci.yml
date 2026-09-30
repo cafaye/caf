@@ -68,10 +68,15 @@ jobs:
       # The one thing kit cannot read out of the tree. A call to a reusable
       # workflow takes no steps, so this value is a literal and has to be
       # written down; internal/ci asserts it against go.mod's `go` directive on
-      # every commit, so it cannot drift. Pinned to the minor rather than
+      # every commit, so it cannot drift. Pinned to an exact version rather than
       # `stable`, because a suite that passes today must not depend on which
       # image the runner had cached.
-      versions: '{"go":"1.25"}'
+      #
+      # Raised from 1.25 to 1.25.0 when the MCP SDK landed: its own `go`
+      # directive is 1.25.0, and a module cannot depend on a patch release newer
+      # than its own directive claims. internal/ci failing on that diff is the
+      # check working, not breaking.
+      versions: '{"go":"1.25.0"}'
       # Measured, not guessed. 89.1% on darwin; 88.2% on linux, the only
       # platform divergence being 4 uncovered statements in
       # doctor_probe_darwin.go against 18 uncovered ones in

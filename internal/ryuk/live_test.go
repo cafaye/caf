@@ -78,6 +78,10 @@ func TestAClosedLeaseReapsAndAnOpenOneDoesNot(t *testing.T) {
 	if matched := docker.ids(ctx, "label="+SessionLabel(session).String()); len(matched) != 0 {
 		t.Fatalf("the filter already matches %v; refusing to start a reaper that would act on them", matched)
 	}
+	// Everything on the machine, before the reaper exists. Taken here so the
+	// "nothing else went away" assertion below is about this run and not about
+	// what the machine happened to look like.
+	before := docker.ids(ctx)
 
 	// The control. A container that carries a different label and must survive.
 	survivor := "caf06-ryuk-survivor"
@@ -137,15 +141,49 @@ func TestAClosedLeaseReapsAndAnOpenOneDoesNot(t *testing.T) {
 	}
 	t.Log("the target was reaped once the lease closed")
 
-	// 4. The control, and then the things this test did not create.
+	// 4. Nothing else went away.
+	//
+	// The check is the whole machine, not a list of names. The first version of
+	// this asserted on a hard-coded list of sibling workers' containers, and it
+	// failed for the right reason on a later run: a sibling worker had retired
+	// its container and started a new one, and the assertion could not tell that
+	// from a reaper that had taken it. A safety property that depends on somebody
+	// else's container still being alive is not a safety property.
+	//
+	// So: everything that existed before the reaper started must still exist,
+	// except the one container the lease was supposed to reap. That holds
+	// whatever the neighbours are doing, and it holds for the two workers that
+	// publish inside caf's port block as much as for anything else.
+	for _, id := range before {
+		if id == target {
+			continue
+		}
+		if !containsID(docker.ids(ctx, "--all"), id) {
+			t.Errorf("container %s is gone; it does not carry the session label and the reaper was not asked to touch it", shortID(id))
+		}
+	}
 	if len(docker.ids(ctx, "--filter", "label="+survivorLabel)) == 0 {
 		t.Error("the control container is gone; the reaper matched something it was not asked to")
 	}
-	for _, name := range []string{"identity-pg-identity10", "searxng-core", "searxng-valkey"} {
-		if len(docker.ids(ctx, "--filter", "name=^"+name+"$")) == 0 {
-			t.Errorf("%s is gone; it carries no session label and must not have been touched", name)
+}
+
+// containsID is membership in a list of container ids.
+func containsID(all []string, want string) bool {
+	for _, id := range all {
+		if id == want {
+			return true
 		}
 	}
+	return false
+}
+
+// shortID is the twelve-character form the daemon shows, which is what a person
+// reading a failure would recognise.
+func shortID(id string) string {
+	if len(id) <= 12 {
+		return id
+	}
+	return id[:12]
 }
 
 // waitGone polls to a deadline. It is not a sleep: the question is "has this
@@ -211,6 +249,9 @@ func (d *liveRuntime) run(ctx context.Context, args ...string) (string, error) {
 	return string(out), err
 }
 
+// ids lists containers, stopped ones included, unless a filter narrows it. A
+// reaped container is *gone* rather than stopped, so a listing that omitted
+// stopped ones would report the wrong thing.
 func (d *liveRuntime) ids(ctx context.Context, filters ...string) []string {
 	args := append([]string{"ps", "-a", "-q", "--no-trunc"}, filters...)
 	out, err := d.run(ctx, args...)

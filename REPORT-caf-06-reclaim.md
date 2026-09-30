@@ -228,17 +228,34 @@ the target survived while the lease was open
 the target was reaped once the lease closed
 ```
 
-and afterwards the control, `identity-pg-identity10`, `searxng-core` and
-`searxng-valkey` were all asserted still present. The reaper container is removed
-by a defer.
+and afterwards **every container that existed before the reaper started was
+asserted still present, except the one the lease was supposed to reap**, plus a
+control container carrying a different label. The reaper container is removed by
+a defer.
 
-**One bug in the test itself, found by running it.** The first version polled
-`docker ps --filter id=<name>`, which matches a container *id* and matches nothing
-when given a name — so `waitGone` returned true on the first poll and the test
-would have reported "reaped while the lease was open". It failed for the right
-reason, and the reason is now in the function's comment. A gated test that has
-never been run is exactly the kind this packet is about, and the failure mode is
-the same shape: a test that passes for a reason other than the one it claims.
+That whole-machine assertion is the second version. The first named three
+sibling workers' containers, and on a later run it failed — correctly, and for a
+reason that had nothing to do with the reaper: a sibling worker had retired
+`identity-pg-identity10` and started `identity10-pg-15733` in its place, and the
+assertion could not tell that from a reaper that had taken it. A safety property
+that depends on somebody else's container still being alive is not a safety
+property, so the assertion is now about everything that was on the machine when
+the reaper started, and it holds whatever the neighbours are doing.
+
+**Two bugs in the test itself, found by running it**, and both are the shape this
+packet is about — a check that can pass for a reason other than the one it
+claims:
+
+1. The first version polled `docker ps --filter id=<name>`, which matches a
+   container *id* and matches nothing when given a name. `waitGone` returned true
+   on the first poll and the test reported "reaped while the lease was open". It
+   failed loudly rather than passing, which is the only reason it was found; a
+   gated test nobody runs is exactly the kind that rots.
+2. The whole-machine assertion named sibling containers, and failed on a run
+   where a neighbour had legitimately retired one. That is described above.
+
+Neither was a defect in the reaper or the client. Both were defects in the
+evidence, which is the harder kind to notice and the kind a meta-test is for.
 
 ### 5.3 The prober, hermetically
 

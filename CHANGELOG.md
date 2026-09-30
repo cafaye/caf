@@ -8,6 +8,78 @@ All notable changes to caf are recorded here. The format follows
 
 ### Added
 
+- **The reclamation ledger** (`internal/ledger`). Every stack caf brings up is
+  written to a ledger **before** the resource is created, so a caf killed
+  mid-run leaves a row naming something that still exists. The reverse order is
+  recoverable by a human; this is not, because a human cannot see an orphan
+  either. The generation is a monotonic per-worktree counter and it is the
+  fencing token: every name on the machine carries it, so a sweeper that read
+  the ledger at generation 3 cannot reach a resource created at generation 4.
+  That is the difference between "a stale sweeper kills a fresh worker" being
+  unlikely and being structurally impossible.
+- **`caf reclaim`**, a dry run unless `-yes`. It removes containers before
+  volumes, always, because Docker will not remove a volume a container still
+  references and a single leaked stopped container pins its named volume
+  forever; the sweep re-lists the volumes once the containers are gone so a
+  newly-unpinned volume is reclaimed rather than reported as failed. Every row
+  ends in `:dropped`, `:missing` or `:failed`, and only `:failed` keeps the
+  ledger entry — never destroy the handle to a resource you failed to destroy.
+  The command exits 1 on a failure so a script can tell a clean sweep from a
+  broken one. It never runs a blanket prune: every call is scoped by the
+  compose project label, and a name that does not carry the entry's generation
+  is refused and reported rather than removed.
+- **The port registry** (`internal/ports`). caf publishes from 15000-15999, and
+  a reservation is *held* — an advisory lock taken before the probe and kept for
+  the life of the session — rather than probed once. A probe answers at one
+  instant and the collision happens after it. The prober binds on both
+  loopback families and never sets `SO_REUSEPORT`; measured on this machine, 40
+  of 40 connections land on the socket bound last, so a successful bind
+  identifies nothing and the failure would present as an unreachable service
+  rather than a busy port. Every port outside the block is refused by name,
+  which is what stops the sprawl (`15001`, `16001`, `21101`, `55432`).
+- **`caf env up <tier> -- <command>`**, the only provisioning verb. It writes the
+  stack to the ledger before creating it, reserves and holds its ports, runs the
+  command as its **child**, and tears the stack down and releases the entry when
+  the child is gone. It is the parent rather than a sibling because a parent that
+  is interrupted has the kernel take the whole group down, and that is what makes
+  cleanup guaranteed rather than remembered. The child's exit code is the
+  command's: a CI job that read 0 out of a red suite would be a green badge for a
+  red run. The tier is **recorded, not enforced** — MD12 owns the tier policy,
+  and a gate this command could apply on its own would be a pass-able gate,
+  which is worse than none.
+- **The reaper lease client** (`internal/ryuk`), for testcontainers/moby-ryuk.
+  The connection is the lease: connect, write one filter line, read `ACK`, hold
+  the socket. The load-bearing part is the refusal — a filter with no labels, or
+  a label with an empty value, degrades at the daemon to "match everything", and
+  a reaper with the Docker socket mounted would then remove every container and
+  volume on the machine. `Filter.Lines` and `Dial` both refuse to produce one.
+  Verified live on this machine against a real reaper, with the filter asserted
+  non-empty and matching nothing beforehand, and with a control container and a
+  sibling worker's containers asserted intact afterwards.
+- **A reclamation section in `caf doctor`**, so cleanup stops depending on
+  somebody remembering: whether the ledger holds stacks nothing has reclaimed,
+  and whether something outside caf's ledger is holding a port in the block.
+
+### Changed
+
+- **`caf doctor` is tri-state and is now a gate for `fail`.** Rows are
+  `ok | warn | fail`; `warn` never moves the exit code; the command exits 1 only
+  when some row is `fail`. This is a behaviour change to a shipped command and
+  `caf help doctor` says so. A boolean check forced a choice between failing on
+  warnings — noisy, and the first thing a team disables — and ignoring them,
+  which makes the report a decoration. Severity is reasoned per *fact* rather
+  than per check, so a missing `tilt` is a `warn` and a missing container runtime
+  is a `fail`, and every fact a check can raise is in one table that a test holds
+  complete. Every row that is not `ok` carries the exact command that fixes it.
+- **The project's ports are warned about when they are outside caf's block.** A
+  port outside 15000-15999 works, and no sibling worker on the machine can see
+  it, which is how the sprawl happens. `caf dev` publishing a service on its own
+  port is not wrong, and an explicit `-port` is honoured — caf checks a port it
+  was given rather than overriding it.
+- **A command that is a parent passes its child's exit code through.** A new
+  `exitCoder` interface, used by `caf env up` alone; the other two codes are
+  unchanged.
+
 - CI, on `.github/workflows/ci.yml`. The toolchain half is kit's shared
   workflow, called rather than copied
   (`cafaye/kit/.github/workflows/ci.reusable.yml@master`, `language: go`), so a

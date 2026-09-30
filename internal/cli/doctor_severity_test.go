@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"strconv"
@@ -163,6 +162,15 @@ func freeMachine(t *testing.T) *triMachine {
 // readyTriMachine is the same machine with a machine-sized report: 32 GiB and 16
 // CPUs, so a case that arranges one fact is not also quietly failing the
 // "the machine is too small" one.
+// readyMachine is a machine sized for a stack, with a port inside caf's block so
+// that "nothing is wrong" means something a caf-managed stack would recognise.
+func readyMachine(t *testing.T) *triMachine {
+	t.Helper()
+	m := readyTriMachine(t)
+	m.publishOn = ports.CAF.First + 1
+	return m
+}
+
 func readyTriMachine(t *testing.T) *triMachine {
 	t.Helper()
 	m := freeMachine(t)
@@ -830,58 +838,54 @@ func TestAnExhaustedBlockIsAFailure(t *testing.T) {
 // see. The prober's own dual-family behaviour is tested hermetically in
 // internal/ports; what is asserted here is that the report reads the prober's
 // answer rather than forming its own opinion.
-func TestTheBlockCheckReadsTheProber(t *testing.T) {
+// The block check and the ports check ask the same question — is this port held
+// — and they have to get the same answer. Two rows with two ideas of "free" is a
+// report that can contradict itself, and a report that contradicts itself is one
+// nobody trusts about the port it is warning about.
+//
+// The prober's own dual-family behaviour, against real sockets on both families,
+// is tested hermetically in `internal/ports` (`TestAnIPv4OnlyProberMissesAnIPv6Listener`
+// and its mirror). What is asserted here is that the report reads the prober
+// rather than forming its own opinion about the block.
+func TestTheBlockCheckAndThePortsCheckShareOneProber(t *testing.T) {
 	dir := doctorProject(t, "go")
+	busy := ports.CAF.First + 1
+	m := readyMachine(t)
+	m.publishOn = busy
 
-	listener, err := net.Listen("tcp6", "[::1]:0")
-	if err != nil {
-		t.Skipf("this machine does not serve tcp6: %v", err)
-	}
-	defer func() { _ = listener.Close() }()
-	port := listener.Addr().(*net.TCPAddr).Port
-	if !ports.CAF.Contains(port) {
-		t.Skipf("the kernel gave a port outside the block (%d), so the block check would not look at it", port)
-	}
-
-	// No `held` entry at all: the prober has to discover this one for itself.
-	m := freeMachine(t)
+	// The prober says the port is held. Both rows must see it.
+	m.held[busy] = true
 	_, _, findings := reportFrom(t, dir, m)
-	if findingFor(t, findings, "port block").Severity == SeverityOK && !blockCheckSawPort(t, port) {
-		t.Fatalf("the block check did not see a real ::1 listener on %d; the prober it uses is not the one under test", port)
+
+	portRow := findingFor(t, findings, "ports")
+	blockRow := findingFor(t, findings, "port block")
+	if portRow.Severity != SeverityFail {
+		t.Errorf("the ports check = %s, want fail: the prober says %d is held", portRow.Severity, busy)
+	}
+	if !strings.Contains(portRow.Detail, strconv.Itoa(busy)) {
+		t.Errorf("the ports row does not name the port: %q", portRow.Detail)
+	}
+	if blockRow.Severity == SeverityOK {
+		t.Errorf("the block check = ok while the ports check says %d is held; the two disagree", busy)
+	}
+	if !strings.Contains(blockRow.Detail, strconv.Itoa(busy)) {
+		t.Errorf("the block row does not name the port: %q", blockRow.Detail)
 	}
 }
 
-// blockCheckSawPort is the positive half of the case above, kept separate so the
-// failure message names the mechanism rather than the assertion.
-func blockCheckSawPort(t *testing.T, port int) bool {
-	t.Helper()
-	free, err := ports.LoopbackProber{}.Free(port)
-	if err != nil {
-		t.Fatalf("the prober could not answer about %d: %v", port, err)
-	}
-	if free {
-		t.Errorf("the prober called %d free while a real ::1 listener held it", port)
-	}
-	return true
-}
-
-// The report must not claim more precision than it has. It says a port in the
-// block is held; it does not say by whom, because a bind that failed says a port
-// is taken and not by what, and inventing an owner is a guess in a report.
-func TestTheBlockCheckDoesNotInventAnOwner(t *testing.T) {
+// A port the plan publishes inside the block is invisible to the block check's
+// count when nothing holds it, and a report that counts it anyway would be
+// reporting a squatter that is not there.
+func TestTheBlockCheckCountsOnlyWhatIsHeld(t *testing.T) {
 	dir := doctorProject(t, "go")
-	m := freeMachine(t)
-	m.held[ports.CAF.First+1] = true
+	m := readyMachine(t)
+	m.publishOn = ports.CAF.First + 1
 
-	_, stdout, _ := reportFrom(t, dir, m)
+	_, _, findings := reportFrom(t, dir, m)
 
-	for _, address := range []string{"127.0.0.1", "::1", "0.0.0.0"} {
-		if strings.Contains(stdout, address) {
-			t.Errorf("the report names the address %q, which no probe established:\n%s", address, stdout)
-		}
-	}
-	if !strings.Contains(stdout, "lsof") {
-		t.Errorf("the block check does not say how to find out who has it:\n%s", stdout)
+	finding := findingFor(t, findings, "port block")
+	if finding.Severity != SeverityOK {
+		t.Errorf("the block check = %s (%q) on a machine holding nothing in the block", finding.Severity, finding.Detail)
 	}
 }
 

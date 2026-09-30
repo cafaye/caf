@@ -18,6 +18,10 @@ internal/cli/       router, registry, one file per subcommand
 internal/contract/  the core contract: manifests, the vendored schema, versions
 internal/dev/       the local stack: the planner, the renderer, two seams
 internal/mcp/       the MCP server: transports, the served table, the SDK seam
+internal/ledger/    the reclamation ledger: what caf created, so cleanup is not memory
+internal/ports/     the port block, the reservation that holds a port, the prober
+internal/reclaim/   the sweep's container-runtime seam, scoped to one project
+internal/ryuk/      the reaper lease client, for testcontainers' Ryuk
 internal/ci/        no code; the test that keeps .github/workflows/ci.yml honest
 bin/prime           the gate: go mod download && go build ./... && go test ./...
 .github/workflows/  ci.yml calls kit's shared workflow; two jobs carry what kit cannot know
@@ -38,6 +42,7 @@ A subcommand never reaches into another subcommand, and nothing outside
 `internal/dev` is split by what it is for, and exists so that `dev` and `deploy`
 do not each grow their own idea of what a stack is:
 
+- `ports.go` — the third seam, `PortAllocator`, and why the planner has it.
 - `doc.go` — what the package is, and the JSON document it expects from a
   registry. The shape is written out there because it is the contract between
   caf and pantry, and a contract that lives only in one function signature is a
@@ -100,12 +105,15 @@ with its full invocation (`contract lint`), so its help and its usage errors
 read as the words the user typed. It is dispatched by the parent's `Run` and is
 never registered in `Commands()`.
 
-**One pure function and two seams.** `internal/dev.Plan` takes a manifest, a
+**One pure function and three seams.** `internal/dev.Plan` takes a manifest, a
 registry and some options, and returns a rendered compose document and a start
 order. It reads no file, opens no socket and runs no command. Everything that
-does touch the world is behind one of two interfaces in that package: `Registry`
-(how a service is run locally) and `Runtime` (the container runtime, three calls
-wide). Both have one real implementation and a fake is a dozen lines.
+does touch the world is behind one of three interfaces in that package:
+`Registry` (how a service is run locally), `Runtime` (the container runtime,
+three calls wide) and `PortAllocator` (which host port a publishing service
+gets). Each has one real implementation and a fake is a dozen lines. `Plan` stays
+pure in all three cases, and the third seam is the reason a test of it can assert
+that a stack publishes the port a caller reserved without binding anything.
 
 This is the constraint that shapes the whole package, so it is worth stating
 plainly: **no test starts a container.** A test that needs Docker to prove
@@ -163,11 +171,59 @@ lives in `internal/mcp` and runs both at the flag and where the listener is
 made, because "loopback only" is a property of the server and not of one
 caller's flag parsing.
 
+**A check is in the registry or it is not a check.** `internal/cli`'s doctor
+questions live in `doctorChecks`, one entry per check, each with a `Probe` that
+answers through the doctor's seams. Two rules follow, and both are load-bearing
+rather than stylistic.
+
+*Every check is drivable into all three severities in a hermetic test.*
+`doctor_severity_test.go` holds a table of one row per check per severity, naming
+the machine state that produces it, and runs that table against a real machine
+through the real report. A check added without its rows fails by name. This
+exists because of a measured failure elsewhere in this fleet: a hand-written
+doctor had a red test for seven of its ten checks, three shipped with only a green
+one, and nothing structurally prevented it. A check that cannot be driven red in a
+test does not ship, which is the difference between a gate and a report.
+
+*Severity is reasoned per fact, not per check.* One check can fail in ways of
+different importance — a ledger with one unreclaimed stack is worth mentioning and
+a ledger that cannot be read means nothing can be reclaimed — so `severityTable`
+is keyed by the failing fact. Every fact a probe can raise is in that table, and
+a test asserts the table is complete: a fact that is missing takes a default
+nobody reasoned about.
+
 **A generated artifact is written and printed.** `caf dev` writes the compose
 file and prints it in full. A command that generates something nobody can
 inspect is a command nobody can debug, and a document that only lives inside a
 tool is a document nobody can diff. The file is byte-identical between runs of
 one manifest, so the diff between two of them is a diff between two manifests.
+
+**Write the entry before the resource, and never the other way round.** This is
+`internal/ledger`'s one ordering rule and it is not negotiable. A caf that dies
+between the record and the resource leaves a ledger entry naming something that
+does not exist, which is `:missing` on the next sweep and costs nothing. The
+reverse order leaves a container no entry names, which is the volume leak this
+package exists to stop — and a human cannot see it either. The corollary is that
+`:failed` never clears the entry: never destroy the handle to a resource you
+failed to destroy.
+
+**A port is held, not probed.** A probe answers at one instant and the collision
+happens after it. `internal/ports` takes the advisory lock *before* it probes and
+keeps it for the life of the session, so two caf sessions racing for one port are
+serialised by the kernel rather than by whichever probe ran last. Two rules ride
+on that: the prober binds on **both** loopback families, because an IPv4-only
+prober calls a port free while something is genuinely listening on `::1`; and it
+never sets `SO_REUSEPORT`, because on macOS a second `SO_REUSEPORT` bind succeeds
+and then captures *all* the traffic (40 of 40 connections landed on the socket
+bound last, measured), so a successful bind identifies nothing and the failure
+presents as an unreachable service rather than a busy port.
+
+**A sweeper names what it removes, and refuses the rest.** Every `docker` call in
+`internal/reclaim` is scoped by the compose project label, and the sweep checks
+that each name carries the ledger entry's generation before removing it. A name
+that does not is reported as `:failed` and left alone. `docker system prune` is
+not in that package and is not going to be: a blanket prune removes state this
+tool does not own.
 
 **Stdlib only, except where the contract demands otherwise.** The router is
 hand-rolled on `flag`; do not add cobra, urfave/cli or a TUI framework without
@@ -178,7 +234,11 @@ information and needs no framework. The compose document is written by hand in
 has no YAML encoder and a general one would order the document's keys by
 whatever order its own map does — which is the one thing about it that must not
 happen. There are two packages with dependencies, and the argument is the same in both:
-the standard library cannot do the job.
+the standard library cannot do the job. `internal/ledger`, `internal/ports`,
+`internal/reclaim` and `internal/ryuk` have none, and that is a constraint rather
+than an accident: the reclamation path is the one that has to keep working when
+nothing else does, and a dependency graph on the path that cleans up after a
+failure is a graph that can fail to load at exactly the wrong moment.
 
 `internal/contract` has two: `github.com/goccy/go-yaml` for YAML (chosen for
 parse errors with a line and a column, and for zero dependencies) and
@@ -201,6 +261,24 @@ against gives a different answer on a different day.
 
 **Comments say why.** Explain the decision and the constraint, not the
 mechanism. A comment restating the line below it is noise.
+
+## Two tests that are not in the gate, and why
+
+`internal/ports/live_test.go` and `internal/ryuk/live_test.go` are skipped
+unless `CAF_LIVE_DOCKER=1` and `CAF_LIVE_RYUK=1` are set. Both need a container
+runtime, and `bin/prime` must run on a bare CI runner.
+
+They are still in the tree, as ordinary `go test` code, rather than as scripts in
+a directory nobody runs — a demonstration that lives outside the suite is a
+demonstration that rots. Each one carries the safety rules its own risk demands
+in its own comments: a scratch port outside 15000-15999, a label on everything it
+creates, a filter asserted non-empty and matching nothing before a reaper with the
+Docker socket mounted is started, and a control container plus a sibling worker's
+resources asserted intact afterwards. **Read those comments before running one on
+a machine that is not yours.**
+
+`internal/ci`'s test is the third tier and it is different in kind: it runs in
+CI, and its job is to fail when something that used to run stops running.
 
 ## Gates
 

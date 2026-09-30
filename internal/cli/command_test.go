@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"flag"
+	"io"
 	"strings"
 	"testing"
 )
@@ -127,72 +128,66 @@ var errBoom = errors.New("boom")
 // tests exercise that machinery on a command that is not in the registry, so
 // the wiring is proven independently of the shipped commands.
 func TestCommandExecute(t *testing.T) {
+	probe := func(r *runRecord) *Command {
+		return &Command{Name: "probe", Flags: probeFlags(r), Run: r.run}
+	}
 	tests := []struct {
-		name      string
-		command   func(record *runRecord) *Command
-		args      []string
-		wantArgs  []string
-		wantFlag  int
-		wantErr   error
-		wantUsage string
+		name     string
+		command  func(record *runRecord) *Command
+		args     []string
+		wantArgs []string
+		wantFlag int
+		runErr   error
+		wantErr  error
 	}{
 		{
-			name: "parses flags and hands over positional arguments",
-			command: func(r *runRecord) *Command {
-				return &Command{Name: "probe", Flags: probeFlags(r), Run: r.run}
-			},
+			name:     "parses flags and hands over positional arguments",
+			command:  probe,
 			args:     []string{"-port", "8080", "acme"},
 			wantArgs: []string{"acme"},
 			wantFlag: 8080,
 		},
 		{
-			name: "applies flag defaults",
-			command: func(r *runRecord) *Command {
-				return &Command{Name: "probe", Flags: probeFlags(r), Run: r.run}
-			},
+			name:     "applies flag defaults",
+			command:  probe,
 			args:     []string{"acme"},
 			wantArgs: []string{"acme"},
 			wantFlag: 80,
 		},
 		{
-			name: "runs without arguments",
-			command: func(r *runRecord) *Command {
-				return &Command{Name: "probe", Flags: probeFlags(r), Run: r.run}
-			},
+			name:     "runs without arguments",
+			command:  probe,
 			wantFlag: 80,
 		},
 		{
-			name: "rejects an unknown flag as a usage error",
-			command: func(r *runRecord) *Command {
-				return &Command{Name: "probe", Flags: probeFlags(r), Run: r.run}
-			},
+			name:     "rejects an unknown flag as a usage error",
+			command:  probe,
 			args:     []string{"-nope"},
+			wantFlag: 80,
 			wantErr:  errUsage,
-			wantArgs: nil,
 		},
 		{
-			name: "propagates the run error",
-			command: func(r *runRecord) *Command {
-				return &Command{Name: "probe", Flags: probeFlags(r), Run: r.run}
-			},
-			args:    []string{"acme"},
-			wantErr: errBoom,
+			name:     "propagates the run error",
+			command:  probe,
+			args:     []string{"acme"},
+			wantArgs: []string{"acme"},
+			wantFlag: 80,
+			runErr:   errBoom,
+			wantErr:  errBoom,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			record := &runRecord{err: errBoom}
+			record := &runRecord{err: tt.runErr}
 			c := tt.command(record)
 			err := c.Execute(newTestEnv(), tt.args)
 
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("err = %v, want %v", err, tt.wantErr)
 			}
-			if record.args != nil || len(tt.wantArgs) > 0 {
-				if strings.Join(record.args, " ") != strings.Join(tt.wantArgs, " ") {
-					t.Errorf("positional args = %v, want %v", record.args, tt.wantArgs)
-				}
+			if strings.Join(record.args, " ") != strings.Join(tt.wantArgs, " ") {
+				t.Errorf("positional args = %v, want %v", record.args, tt.wantArgs)
 			}
 			if record.port != tt.wantFlag {
 				t.Errorf("-port = %d, want %d", record.port, tt.wantFlag)
@@ -233,8 +228,8 @@ func TestCommandHelpFlagPrintsHelp(t *testing.T) {
 			if record.ran {
 				t.Error("run function was called, want help only")
 			}
-			if !strings.Contains(env.stdout.String(), "caf probe") {
-				t.Errorf("help was not printed\ngot:\n%s", env.stdout.String())
+			if !strings.Contains(written(t, env.Stdout), "caf probe") {
+				t.Errorf("help was not printed\ngot:\n%s", written(t, env.Stdout))
 			}
 		})
 	}
@@ -287,12 +282,18 @@ func probeFlags(r *runRecord) func(fs *flag.FlagSet) {
 	}
 }
 
-type testEnv struct {
-	*Env
-	stdout *bytes.Buffer
+// newTestEnv is an Env that writes to buffers, so a test can read back exactly
+// what a command printed.
+func newTestEnv() *Env {
+	return &Env{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Version: testVersion}
 }
 
-func newTestEnv() *testEnv {
-	out := &bytes.Buffer{}
-	return &testEnv{Env: &Env{Stdout: out, Stderr: &bytes.Buffer{}, Version: testVersion}, stdout: out}
+// written returns what a command wrote to one of the test env's streams.
+func written(t *testing.T, w io.Writer) string {
+	t.Helper()
+	buf, ok := w.(*bytes.Buffer)
+	if !ok {
+		t.Fatalf("stream is %T, want *bytes.Buffer", w)
+	}
+	return buf.String()
 }

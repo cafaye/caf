@@ -182,7 +182,7 @@ func TestRunFillsInUnsetVersion(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
-	if want := devVersion.String() + "\n"; stdout != want {
+	if want := "caf " + devVersion + " (commit " + unknownCommit + ")\n"; stdout != want {
 		t.Errorf("stdout = %q, want %q", stdout, want)
 	}
 }

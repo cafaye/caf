@@ -249,6 +249,115 @@ func TestThePlanToolReportsTheStackAndOnlyVariableNames(t *testing.T) {
 	}
 }
 
+// The doctor tool is the existing doctor: the same toolchain table, the same
+// project checks, as fields. The rows are the real machine's, so the assertions
+// are about shape and about the counts the report makes of itself rather than
+// about whether this machine has Ruby.
+func TestTheDoctorToolReportsBothHalvesOfTheDoctorReport(t *testing.T) {
+	dir := manifestProject(t)
+	tools, _ := mcpTestTools(t, "")
+
+	report, err := tools.runDoctor(context.Background(), doctorArgs{Project: dir})
+	if err != nil {
+		t.Fatalf("caf_doctor: %v", err)
+	}
+
+	if len(report.Tools) != len(wantTools) {
+		t.Errorf("the toolchain table has %d rows, want the %d `caf doctor` reports", len(report.Tools), len(wantTools))
+	}
+	if report.ToolsTotal != len(report.Tools) {
+		t.Errorf("tools_total = %d, want %d", report.ToolsTotal, len(report.Tools))
+	}
+	// Every row carries a status word, whatever the machine is: a row with an
+	// empty status is a row an agent cannot act on.
+	for _, row := range report.Tools {
+		if row.Status != "ok" && row.Status != "missing" {
+			t.Errorf("row %q has status %q, want ok or missing", row.Name, row.Status)
+		}
+		if row.Path != "" && row.Status == "missing" {
+			t.Errorf("row %q is missing yet carries a path", row.Name)
+		}
+	}
+	if report.ProjectName != "stack" {
+		t.Errorf("project name = %q, want stack", report.ProjectName)
+	}
+	if report.PlanError != "" {
+		t.Errorf("plan error = %q, want none for a project that plans", report.PlanError)
+	}
+	// The project half is the one that cannot be answered from PATH, so its
+	// checks are the ones an agent cannot do itself.
+	if len(report.Checks) == 0 {
+		t.Error("no project checks were reported, so the machine half is the whole answer")
+	}
+	for _, check := range report.Checks {
+		if check.Name == "" || check.Status == "" {
+			t.Errorf("a check row is %+v, want a name and a status", check)
+		}
+	}
+}
+
+// tools_only is the flag a caller sets when it wants the machine and not the
+// project, and it has to actually skip the project half rather than run it and
+// drop the rows — the difference is a `docker version` subprocess nobody asked
+// for.
+func TestTheDoctorToolHonoursToolsOnly(t *testing.T) {
+	tools, _ := mcpTestTools(t, "")
+
+	report, err := tools.runDoctor(context.Background(), doctorArgs{Project: t.TempDir(), ToolsOnly: true})
+	if err != nil {
+		t.Fatalf("caf_doctor: %v", err)
+	}
+
+	if len(report.Tools) == 0 {
+		t.Error("tools_only dropped the toolchain table too")
+	}
+	if len(report.Checks) != 0 || report.PlanError != "" {
+		t.Errorf("tools_only still reported the project half: %d checks, plan error %q", len(report.Checks), report.PlanError)
+	}
+	if !strings.Contains(report.Note, "tools_only") {
+		t.Errorf("note = %q, want it to say the project checks were skipped", report.Note)
+	}
+}
+
+// A directory with no manifest is reported as itself rather than as a set of
+// checks that happen to be absent: an agent reading a report with no rows cannot
+// tell "nothing to check" from "the check failed".
+func TestTheDoctorToolReportsAProjectItCannotRead(t *testing.T) {
+	tools, _ := mcpTestTools(t, "")
+
+	report, err := tools.runDoctor(context.Background(), doctorArgs{Project: t.TempDir()})
+	if err != nil {
+		t.Fatalf("caf_doctor: %v", err)
+	}
+
+	if report.PlanError == "" {
+		t.Fatal("a directory with no manifest reported no error")
+	}
+	if !strings.Contains(report.PlanError, "cafaye.yml") {
+		t.Errorf("plan error = %q, want it to name the manifest that is missing", report.PlanError)
+	}
+	if len(report.Checks) != 0 {
+		t.Errorf("checks = %+v, want none: the project could not be read", report.Checks)
+	}
+}
+
+// A project with no argument is the server's working directory, which is what an
+// agent host spawns caf in. Asserted as a fact about the answer rather than by
+// reading the source: the field the agent gets back says which directory was
+// actually checked.
+func TestTheToolsDefaultToTheServersWorkingDirectory(t *testing.T) {
+	tools, _ := mcpTestTools(t, "")
+
+	report, err := tools.runDoctor(context.Background(), doctorArgs{ToolsOnly: true})
+	if err != nil {
+		t.Fatalf("caf_doctor: %v", err)
+	}
+
+	if report.Project != "." {
+		t.Errorf("project = %q, want the working directory", report.Project)
+	}
+}
+
 // caf_dev_up is the one tool that starts something, so its two properties are
 // worth stating directly: it is safe to call twice, and it does not tear the
 // stack down when it succeeds. The second is the one a naive port gets wrong —
@@ -377,6 +486,202 @@ func TestTheDevUpToolReportsAStackThatDidNotSettle(t *testing.T) {
 	}
 }
 
+// An API document caf cannot read is an error rather than a blank version. An
+// agent that reads "version: " concludes the service publishes one, and the
+// difference between "the document says 0.4.2" and "caf could not read the
+// document" is the difference between a fact and a guess.
+func TestTheManifestToolRefusesAnUnreadableAPIDocument(t *testing.T) {
+	tests := []struct {
+		name     string
+		document *string
+		want     string
+	}{
+		{name: "absent", document: nil, want: "read the API document"},
+		{name: "not YAML", document: strptr("\topenapi: [unclosed\n"), want: "parse the API document"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{"docker/Dockerfile": "FROM scratch\n"}
+			if tt.document != nil {
+				// The manifest names this path in every case, so an absent
+				// document is an absent file rather than an empty one.
+				files["openapi/openapi.yaml"] = *tt.document
+			}
+			dir := projectDir(t, files)
+			tools, _ := mcpTestTools(t, "")
+
+			facts, err := tools.runManifest(context.Background(), projectArgs{Project: dir})
+			if err == nil {
+				t.Fatalf("an unreadable API document produced an answer with version %q", facts.APIVersion)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("err = %q, want it to contain %q", err, tt.want)
+			}
+		})
+	}
+}
+
+// A document with no `info.version` is reported as no version rather than as an
+// invented one, and the answer still says what the document is called: the two
+// fields are read independently because a document can have one without the
+// other.
+func TestTheManifestToolReadsTheAPIInfoFieldsIndependently(t *testing.T) {
+	dir := projectDir(t, map[string]string{
+		"docker/Dockerfile":    "FROM scratch\n",
+		"openapi/openapi.yaml": "openapi: 3.1.0\ninfo:\n  title: no-version\npaths: {}\n",
+	})
+	tools, _ := mcpTestTools(t, "")
+
+	facts, err := tools.runManifest(context.Background(), projectArgs{Project: dir})
+	if err != nil {
+		t.Fatalf("caf_manifest: %v", err)
+	}
+	if facts.APITitle != "no-version" {
+		t.Errorf("api title = %q, want no-version", facts.APITitle)
+	}
+	if facts.APIVersion != "" {
+		t.Errorf("api version = %q, want empty for a document that declares none", facts.APIVersion)
+	}
+}
+
+// The manifest's core constraint is reported through the resolver, so a
+// constraint caf cannot read is reported as the absence of one rather than as
+// the raw string — the string is in the file, and the parsed form is what
+// everything else in the platform compares against.
+func TestTheManifestToolReportsTheResolvedCoreConstraint(t *testing.T) {
+	dir := manifestProject(t)
+	tools, _ := mcpTestTools(t, "")
+
+	facts, err := tools.runManifest(context.Background(), projectArgs{Project: dir})
+	if err != nil {
+		t.Fatalf("caf_manifest: %v", err)
+	}
+	if facts.Core != "^0.2.0" {
+		t.Errorf("core = %q, want ^0.2.0", facts.Core)
+	}
+}
+
+// What the registry adds for this service is reported by name — the image, the
+// variables it is configured with, the services it needs — because that is what
+// a manifest cannot state and an agent cannot otherwise learn. The values of
+// those variables are the redaction rule and are covered above; this is the
+// test that the safe half is actually reported rather than withheld entirely.
+func TestTheManifestToolReportsWhatTheRegistryAddsForThisService(t *testing.T) {
+	dir := projectDir(t, map[string]string{
+		"docker/Dockerfile":    "FROM scratch\n",
+		"openapi/openapi.yaml": projectAPI,
+		"catalog.json": `{
+  "stack": {
+    "name": "stack",
+    "image": "ghcr.io/cafaye/stack:0.5.0",
+    "port": 8080,
+    "environment": {"LOG_LEVEL": "info"},
+    "dependencies": ["postgres"]
+  }
+}
+`,
+	})
+	tools, _ := mcpTestTools(t, dir+"/catalog.json")
+
+	facts, err := tools.runManifest(context.Background(), projectArgs{Project: dir})
+	if err != nil {
+		t.Fatalf("caf_manifest: %v", err)
+	}
+	if len(facts.Registry) != 1 {
+		t.Fatalf("registry_writes = %+v, want one entry for this service", facts.Registry)
+	}
+	entry := facts.Registry[0]
+	if entry.Image != "ghcr.io/cafaye/stack:0.5.0" {
+		t.Errorf("image = %q", entry.Image)
+	}
+	if len(entry.Environment) != 1 || entry.Environment[0] != "LOG_LEVEL" {
+		t.Errorf("environment = %v, want the name LOG_LEVEL", entry.Environment)
+	}
+	if len(entry.Dependencies) != 1 || entry.Dependencies[0] != "postgres" {
+		t.Errorf("dependencies = %v, want [postgres]", entry.Dependencies)
+	}
+}
+
+// A project that declares a dependency the catalog does not know is a fact the
+// registry tool reports rather than an error: the question was what the catalog
+// says, and "nothing, which is why your project cannot be planned" is the
+// answer. A soft dependency is the case that reaches here — a required one is a
+// refusal from the planner.
+func TestTheRegistryToolReportsWhatAPlanLeavesOutAndWhy(t *testing.T) {
+	tests := []struct {
+		name     string
+		manifest string
+		want     []string
+	}{
+		{
+			name: "an optional dependency the catalog does not know",
+			manifest: `name: stack
+description: Has an optional dependency.
+language: go
+core: ^0.2.0
+dependencies:
+  - name: unknown-service
+    version: ^0.1.0
+    required: false
+repository:
+  url: git@github.com:cafaye/stack.git
+owner:
+  team: stack
+`,
+			want: []string{"optional dependency", "does not know how to run it"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := projectDir(t, map[string]string{
+				"docker/Dockerfile": "FROM scratch\n",
+				"cafaye.yml":        tt.manifest,
+			})
+			tools, _ := mcpTestTools(t, "")
+
+			facts, err := tools.runRegistry(context.Background(), projectArgs{Project: dir})
+			if err != nil {
+				t.Fatalf("caf_registry: %v", err)
+			}
+			if len(facts.Skipped) != 1 {
+				t.Fatalf("skipped = %+v, want one entry", facts.Skipped)
+			}
+			// The name is the field beside the reason, not a part of it: the
+			// reason is the planner's own sentence, and a copy of it here would
+			// be a second place for the two to disagree.
+			if facts.Skipped[0].Service != "unknown-service" {
+				t.Errorf("skipped service = %q", facts.Skipped[0].Service)
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(facts.Skipped[0].Reason, want) {
+					t.Errorf("the reason %q does not contain %q: a skip without a reason is one a developer debugs by reading a compose file", facts.Skipped[0].Reason, want)
+				}
+			}
+		})
+	}
+}
+
+// A project that cannot be planned is reported in the note, appended to what is
+// already known rather than replacing it. Replacing is the bug this guards: the
+// "no catalog" sentence would vanish the moment a project was also named.
+func TestTheRegistryToolAppendsRatherThanReplacesItsNote(t *testing.T) {
+	dir := dependingProject(t)
+	tools, _ := mcpTestTools(t, "")
+
+	facts, err := tools.runRegistry(context.Background(), projectArgs{Project: dir})
+	if err != nil {
+		t.Fatalf("caf_registry: %v", err)
+	}
+
+	for _, want := range []string{"without -registry", "unknown dependency", "alpha"} {
+		if !strings.Contains(facts.Note, want) {
+			t.Errorf("note = %q, want it to carry both what is known and what went wrong (%q missing)", facts.Note, want)
+		}
+	}
+}
+
 // The tool table is the product: every tool carries a description, and every
 // description says what the tool does not do. Both are pinned here over the real
 // table rather than over a literal, so a tool added in a hurry and a description
@@ -404,3 +709,8 @@ func TestEveryToolNameIsOneCafWouldShip(t *testing.T) {
 		}
 	}
 }
+
+// strptr is a pointer to a literal, for a table whose fixture contents are
+// optional: an absent file and an empty one are different facts, and a table
+// field has to be able to say "absent".
+func strptr(s string) *string { return &s }

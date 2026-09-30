@@ -237,9 +237,9 @@ func TestTheToolchainPinIsTheOneGoModDeclares(t *testing.T) {
 }
 
 // goDirective reads the `go` line out of go.mod. Hand-parsed rather than
-// imported: this repository is standard library plus the two dependencies
-// internal/contract documents, and a third module for one line of a file that
-// is four lines long is not a trade anybody makes.
+// imported: this repository is the standard library plus the three
+// dependencies internal/contract and internal/mcp document, and a module for
+// one line of a file that is four lines long is not a trade anybody makes.
 func goDirective(t *testing.T) string {
 	t.Helper()
 

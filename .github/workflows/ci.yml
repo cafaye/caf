@@ -77,13 +77,16 @@ jobs:
       # than its own directive claims. internal/ci failing on that diff is the
       # check working, not breaking.
       versions: '{"go":"1.25.0"}'
-      # Measured, not guessed. 89.1% on darwin; 88.2% on linux, the only
-      # platform divergence being 4 uncovered statements in
-      # doctor_probe_darwin.go against 18 uncovered ones in
-      # doctor_probe_linux.go, which is the whole of the `//go:build` surface in
-      # this tree. 85 is the floor of the two with room left, and it is not 0,
-      # because a threshold of 0 fails nothing and a gate that cannot fail is
-      # not a gate.
+      # Measured, not guessed. 90.0% after caf-05, which added internal/mcp and
+      # the six MCP tools with their tests. The platform divergence is the same
+      # one as before — uncovered statements in doctor_probe_darwin.go against
+      # doctor_probe_linux.go, the whole of the `//go:build` surface in this
+      # tree — so the darwin figure is the one to read and the linux figure is
+      # a little under it. 85 stays the gate rather than being raised to the
+      # measurement: a threshold set at the current number fails on the next
+      # line of code nobody covered, which trains people to write the test that
+      # lifts it rather than to read what the gate says. Raise it when the floor
+      # has genuinely risen, never to follow a single packet's number upward.
       coverage-fail-under: '85'
       # caf is a CLI. It serves no HTTP, holds no listener, and the tree has no
       # reference to a traceparent or an OTel SDK, so the conformance job has

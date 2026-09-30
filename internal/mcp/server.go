@@ -201,17 +201,18 @@ func boolPtr(b bool) *bool { return &b }
 // ServeStdio speaks the protocol over a reader and a writer — the process's own
 // stdin and stdout, in production.
 //
-// It returns when the client closes the connection or the context is done. A
-// clean end of input is not a failure: an agent host that has finished with a
-// server closes its end, and the correct response is to exit.
+// It returns when the client closes the connection or the context is done, and
+// both of those are successes. A clean end of input is not a failure: an agent
+// host that has finished with a server closes its end, and the correct response
+// is to exit quietly. A cancelled context is how this server is stopped — a
+// signal to the process, or a cancellation from a test — and a server that
+// printed an error and exited 1 because somebody asked it to stop would make
+// every host's shutdown path look like a crash.
 func (s *Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) error {
 	transport := &sdk.IOTransport{Reader: readCloser(in), Writer: writeCloser(out)}
 	err := s.impl.Run(ctx, transport)
-	if err != nil && ctx.Err() != nil {
-		// The context is how this server is stopped — a signal to the process,
-		// or a cancellation from a test — so a session torn down that way is
-		// not a failure to report.
-		return ctx.Err()
+	if ctx.Err() != nil {
+		return nil
 	}
 	return err
 }
@@ -259,7 +260,9 @@ func (s *Server) ServeHTTP(ctx context.Context, addr string, ready func(addr str
 	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
-	return ctx.Err()
+	// The listener closing is the server being stopped, not the server failing,
+	// for the reason ServeStdio gives.
+	return nil
 }
 
 // CheckLoopbackAddr reports whether an address is one this server may listen

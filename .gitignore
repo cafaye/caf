@@ -1,0 +1,21 @@
+# GoReleaser build output.
+/dist/
+
+# A locally built binary. bin/ is not ignored: bin/prime is a tracked script.
+/caf
+/caf.exe
+
+# Test and coverage output.
+coverage.txt
+*.out
+*.test
+
+# Local environment.
+.env
+.env.*
+!.env.example
+
+# Editor and OS noise.
+.DS_Store
+.idea/
+.vscode/

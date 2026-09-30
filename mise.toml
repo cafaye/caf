@@ -4,7 +4,7 @@
 #   mise install    # install the pinned toolchain
 #   mise run prime  # the gate
 [tools]
-go = "1.25"
+go = "1.25.0"
 
 [tasks.prime]
 description = "The gate: download, build, test"

@@ -156,6 +156,18 @@ func (m Manifest) ServesHTTP() bool {
 	return m.fields.Exposes != nil && m.fields.Exposes.APIDocument != ""
 }
 
+// APIDocument is the path, relative to the project root, of the OpenAPI
+// document `exposes.api` names — or "" when the manifest declares no HTTP
+// surface. It is the same field ServesHTTP tests, read out through an accessor,
+// because a caller that pattern-matched the manifest for the path would be
+// reading a field the schema owns.
+func (m Manifest) APIDocumentPath() string {
+	if m.fields.Exposes == nil {
+		return ""
+	}
+	return m.fields.Exposes.APIDocument
+}
+
 // CoreConstraint is the `core` field parsed as a constraint on the core spec
 // version, so `caf gen` and `caf deploy` can ask what a service was written
 // against instead of pattern-matching the string themselves.

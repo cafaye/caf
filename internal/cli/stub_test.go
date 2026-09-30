@@ -26,13 +26,12 @@ var stubCommands = []stubCommand{
 	{name: "deploy", args: 1, flags: []string{"-env", "production", "-dry-run"}},
 	{name: "gen", args: 1, flags: []string{"-out", "dist", "-force"}},
 	{name: "init", args: 0, flags: []string{"-dir", "app", "-force"}},
-	{name: "mcp", args: 0, flags: []string{"-transport", "http"}},
 	{name: "new", args: 1, flags: []string{"-template", "api"}},
 }
 
 // workingCommands are the subcommands that are not stubs because they already
 // work. They are pinned by their own behavior tests.
-var workingCommands = []string{"contract", "dev", "doctor", "version"}
+var workingCommands = []string{"contract", "dev", "doctor", "mcp", "version"}
 
 // invocation builds a valid command line for a stub: its flags, then the
 // positional arguments it wants.

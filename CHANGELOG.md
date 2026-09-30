@@ -22,6 +22,60 @@ All notable changes to caf are recorded here. The format follows
   CI shells out to** — `caf contract lint` is what prints the `OK …` lines
   pantry's gate ends on — so a red build here is a red build in every
   repository whose contract check runs.
+- **`caf mcp`**, a real MCP server. It starts, lists six tools and answers a
+  call — over stdio, which is what an agent host spawns, and over the
+  streamable HTTP transport on a loopback address. The tools are
+  `caf_doctor`, `caf_manifest`, `caf_registry`, `caf_dev_plan`, `caf_dev_up`
+  and `caf_dev_down`, and every one is a read over work caf already does:
+  the existing `doctor`, the existing contract linter, the existing planner
+  and the existing `dev` runtime seam. No tool is a second implementation
+  of something `caf` already knows.
+  - **A failing tool is a tool error**, a result with `isError`, never a
+    JSON-RPC error and never a dead process. A panic inside a tool is
+    caught and becomes a tool error. An agent gets one broken call and
+    carries on; one that kills the server needs its host to restart it.
+  - **An unknown method is answered** with `-32601` rather than swallowed.
+  - **Stdout is the protocol** on the stdio transport, so every print a tool
+    would have made — `caf doctor`'s tables, `caf dev`'s compose document —
+    goes to stderr. A stray line in the stream is a corrupt stream, not
+    untidy output.
+  - **Environment values are never returned.** A catalog entry's
+    `environment` is that service's configuration and is where credentials
+    live; the tools report variable names, and the compose document stays on
+    disk with its path returned instead. Tests assert the rendered JSON of
+    each answer, so a value reaching a field nobody checked still fails.
+  - **The HTTP listener is loopback-only** and refuses anything else,
+    checked at the flag and again in the server: two of the tools start and
+    stop containers, so a network-reachable listener would be an
+    unauthenticated remote shell over the container runtime.
+- `internal/mcp`, a thin wrapper over
+  `github.com/modelcontextprotocol/go-sdk`, the official Go SDK. The
+  protocol's wire format has moved several times and a hand-rolled JSON-RPC
+  framing layer is a month of work and a permanent maintenance burden.
+  Nothing above this package imports the SDK, so every tool stays an
+  ordinary Go function. `internal/mcp` refuses a tool with an empty
+  description at registration, because a description is what an agent reads
+  to decide whether to call the tool and an empty one is a tool nobody ever
+  calls.
+- The wire-level tests for `caf mcp` spawn the built binary, speak
+  newline-delimited JSON-RPC to its stdin and read framed responses from its
+  stdout: a `tools/list`, a `tools/call`, an unknown method, an unknown
+  tool, a failing tool followed by a working one, and the redaction. They
+  need no Docker and no running deployment. Synchronising is a read with a
+  deadline, and the harness distinguishes "the process exited" from "the
+  process is up and said nothing", so a crash is never reported as a flake.
+- `go.mod` moves from `go 1.25` to `go 1.25.0`, because the MCP SDK's own
+  `go` directive is 1.25.0 and a module cannot depend on a patch release
+  newer than the one it claims. The CI toolchain pin moves with it, which is
+  what `internal/ci` exists to check.
+- `internal/dev`, and the registry seam beside it: `Enumerable` is the
+  optional half of `Registry` — the names of everything a registry holds.
+  Building a stack asks about services the manifest names, which `Resolve`
+  answers; *reporting on* a registry is a different question needing the
+  whole list, so it is asked of a separate interface rather than widening
+  the one every registry has to implement.
+- `Manifest.APIDocumentPath` reads `exposes.api` through an accessor, so a
+  caller cannot pattern-match a field the schema owns.
 - `internal/ci`, a package with no code and one test: it reads
   `.github/workflows/ci.yml` and fails when the `uses:` path stops resolving,
   when the toolchain pin drifts from `go.mod`, when the coverage threshold

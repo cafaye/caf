@@ -38,7 +38,7 @@ go build ./cmd/caf
 | `caf gen <target>` | generate code and config from cafaye contracts | flags only |
 | `caf contract lint <path>` | validate `cafaye.yml` against the core schema | **works** |
 | `caf contract resolve <c> <v>` | resolve a core version constraint | **works** |
-| `caf mcp` | serve the cafaye tools over the Model Context Protocol | flags only |
+| `caf mcp` | serve the cafaye tools over the Model Context Protocol | **works** |
 | `caf version` | print the caf version | **works** |
 | `caf doctor [path]` | report the toolchains, and whether this machine can run this project | **works** |
 
@@ -472,6 +472,7 @@ cmd/caf/main.go     thin entrypoint: process in, exit code out
 internal/cli/       the router, the registry, one file per subcommand
 internal/contract/  manifest loading, schema validation, version resolution
 internal/dev/       the local stack: planning, rendering, the two seams
+internal/mcp/       the MCP server: transports, the served table, the seam
 ```
 
 `internal/dev` is the only place that knows what a local stack is. `Plan` is a
@@ -499,6 +500,85 @@ library cannot do:
 
 There is no CLI framework: routing is hand-rolled on the standard `flag`
 package.
+
+## `caf mcp`
+
+`caf mcp` serves six tools to an agent over the Model Context Protocol. Every
+one of them is a read over work caf already does — `caf doctor` for the machine,
+the contract linter for a manifest, the planner for a stack — rather than a
+second implementation of any of them.
+
+| Tool | What it answers | Writes? |
+|---|---|---|
+| `caf_doctor` | which toolchains this machine has, and whether it can run this project | no |
+| `caf_manifest` | what a `cafaye.yml` declares, and its API document's title and version | no |
+| `caf_registry` | what the service catalog says, and what the plan leaves out and why | no |
+| `caf_dev_plan` | the stack `caf dev` would build, and where the compose document went | writes the document |
+| `caf_dev_up` | bring the local stack up and report what came up | starts containers |
+| `caf_dev_down` | take the local stack down and report what is left | stops containers |
+
+Most agent hosts spawn it as a child process and speak stdio, which is the
+default. A host configuration looks like this:
+
+```json
+{
+  "mcpServers": {
+    "caf": { "command": "caf", "args": ["mcp", "-registry", "../pantry/registry.json"] }
+  }
+}
+```
+
+`-registry` is the service catalog the tools resolve dependencies through, the
+same one `caf dev -registry` takes.
+
+### Three things it does that a stub cannot
+
+**A failing tool is a tool error.** The protocol has two error channels: a
+JSON-RPC error, meaning the call did not happen, and a tool result with
+`isError`, meaning it happened and did not succeed. An agent reads the second
+and carries on; the first means its host has to restart the server. Every
+failure inside a tool is the second — including a panic, which is caught and
+turned into a tool error rather than taking the process with it.
+
+**An unknown method is answered.** `tools/definitelyNotAMethod` comes back as
+JSON-RPC `-32601`. A server that hangs on a method it does not implement is a
+server an agent cannot reason about.
+
+**Stdout is the protocol.** On the stdio transport stdout *is* the wire, so a
+single stray print is a corrupt stream: the client loses its place and every
+later call fails. Everything caf would have printed — `caf doctor`'s two tables,
+`caf dev`'s compose document, a container list — goes to stderr instead.
+
+### What the tools do not return
+
+Environment values, anywhere. A registry entry's `environment` is that service's
+own configuration, and configuration is where credentials live, so
+`caf_registry` reports the variable *names* and `caf_dev_plan` reports the names
+of what the compose document sets. The document itself is written to disk and
+its path is returned; the `DATABASE_URL` in it carries the project name as its
+password and is not in the answer.
+
+The tools are annotated for what they do to the machine: the four reads carry
+`readOnlyHint: true`, the two that start or stop containers do not, and both are
+`idempotentHint: true` because calling `caf_dev_up` twice reconciles the same
+stack rather than starting a second one.
+
+### HTTP, on loopback only
+
+`caf mcp -transport http` serves the streamable HTTP transport. The listener is
+loopback-only and anything else is refused, checked both at the flag and again
+where the listener is made. This is not a conservative default: two of the tools
+start and stop containers, so a listener reachable from the network would be an
+unauthenticated remote shell over the machine's container runtime.
+
+### The library
+
+`internal/mcp` is a thin wrapper over
+[github.com/modelcontextprotocol/go-sdk](https://github.com/modelcontextprotocol/go-sdk),
+the official Go SDK. MCP's wire format has moved several times and a hand-rolled
+JSON-RPC framing layer is a month of work and a permanent maintenance burden.
+Above that wrapper nothing imports the SDK, so every tool stays an ordinary Go
+function with an ordinary Go signature.
 
 ## Roadmap
 

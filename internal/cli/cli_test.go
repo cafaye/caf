@@ -163,7 +163,10 @@ func TestRunExitCodes(t *testing.T) {
 		{name: "unknown command is a usage error", args: []string{"nope"}, want: 2},
 		{name: "unknown flag is a usage error", args: []string{"deploy", "--nope"}, want: 2},
 		{name: "bad arity is a usage error", args: []string{"gen", "a", "b"}, want: 2},
-		{name: "a stub failure is a plain error", args: []string{"mcp"}, want: 1},
+		// `init` rather than a command that wants an argument: this row is about
+		// a stub that ran correctly and failed, and a wrong argument count is a
+		// usage error, which the rows above already cover.
+		{name: "a stub failure is a plain error", args: []string{"init"}, want: 1},
 	}
 
 	for _, tt := range tests {

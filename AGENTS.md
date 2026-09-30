@@ -17,6 +17,7 @@ cmd/caf/main.go     thin entrypoint: build a cli.Options, exit with its code
 internal/cli/       router, registry, one file per subcommand
 internal/contract/  the core contract: manifests, the vendored schema, versions
 internal/dev/       the local stack: the planner, the renderer, two seams
+internal/mcp/       the MCP server: transports, the served table, the SDK seam
 internal/ci/        no code; the test that keeps .github/workflows/ci.yml honest
 bin/prime           the gate: go mod download && go build ./... && go test ./...
 .github/workflows/  ci.yml calls kit's shared workflow; two jobs carry what kit cannot know
@@ -121,7 +122,46 @@ from `PATH`, because `docker --version` succeeds whether or not a daemon is
 answering, so a report that only resolved the binary would say `ok` on a machine
 where nothing can start. So `doctor`'s environment section runs one bounded
 `docker version`, and reads memory and free ports without a subprocess. No other
-command runs anything except `dev`, which runs `docker compose`.
+command runs anything except `dev`, which runs `docker compose`, and `mcp`,
+which runs `docker compose` because two of its tools are `caf dev` with a
+protocol around them.
+
+**The wire is tested against a real process.** `internal/mcp`'s unit tests drive
+the SDK's in-memory transport, which is right for the wrapper's own behaviour
+(error mapping, annotations, the description guard) and wrong for anything about
+MCP. The protocol tests in `internal/cli/mcp_wire_test.go` spawn the built
+binary, write newline-delimited JSON-RPC to its stdin, read framed responses from
+its stdout and assert on the wire bytes. A test that calls `listTools()`
+directly has proved nothing about MCP, and this is the one place in the tree where
+a mock at the wrong layer is worthless.
+
+Three rules follow from that transport, and they are not stylistic:
+
+- **A failing tool is a tool error.** The protocol's two error channels mean
+  different things to an agent: a JSON-RPC error says the call did not happen,
+  and a result with `isError` says it happened and failed. An agent reads the
+  second and carries on; the first means its host restarts the server. A panic
+  inside a tool is recovered and becomes a tool error.
+- **Stdout is the protocol.** On stdio, a stray print is a corrupt stream: the
+  client reads one message per line and loses its place. Every print a tool
+  would have made goes to stderr, and `TestToolOutputNeverReachesTheProtocolStream`
+  is the test that holds it there.
+- **Synchronising is a read with a deadline, never a sleep.** The harness
+  distinguishes *the process exited* from *the process is up and said nothing*,
+  because a harness that conflates them turns every crash into a flake.
+
+**A tool never returns a credential.** A registry entry's `environment` is a
+service's own configuration. The tools report variable names and the compose
+document's path; the redaction tests assert against the whole rendered JSON of
+each answer rather than field by field, because a value that reached a field
+nobody thought to check is exactly the case they exist for.
+
+**A listener this CLI opens is loopback-only.** `mcp`'s HTTP transport starts
+and stops containers, so an address reachable from the network would be an
+unauthenticated remote shell over the machine's container runtime. The check
+lives in `internal/mcp` and runs both at the flag and where the listener is
+made, because "loopback only" is a property of the server and not of one
+caller's flag parsing.
 
 **A generated artifact is written and printed.** `caf dev` writes the compose
 file and prints it in full. A command that generates something nobody can
@@ -137,11 +177,20 @@ information and needs no framework. The compose document is written by hand in
 `internal/dev/render.go` rather than marshalled, because the standard library
 has no YAML encoder and a general one would order the document's keys by
 whatever order its own map does — which is the one thing about it that must not
-happen. The one exception is `internal/contract`, which has two dependencies
-because the standard library cannot do either job: `github.com/goccy/go-yaml` for YAML
-(chosen for parse errors with a line and a column, and for zero dependencies)
-and `github.com/santhosh-tekuri/jsonschema/v6` for draft 2020-12 validation.
-A third dependency needs the same argument in the package doc.
+happen. There are two packages with dependencies, and the argument is the same in both:
+the standard library cannot do the job.
+
+`internal/contract` has two: `github.com/goccy/go-yaml` for YAML (chosen for
+parse errors with a line and a column, and for zero dependencies) and
+`github.com/santhosh-tekuri/jsonschema/v6` for draft 2020-12 validation.
+
+`internal/mcp` has one: `github.com/modelcontextprotocol/go-sdk`, the official
+Go SDK for the Model Context Protocol. The standard library has no JSON-RPC, no
+protocol-version negotiation and no tool-call semantics, and MCP's wire format
+has moved several times — so a hand-rolled framing layer is a month of work that
+never stops being maintained. That package doc holds the full argument and the
+three candidates that were measured against it. A fourth dependency needs the
+same argument in the package doc.
 
 **The schema is vendored, never fetched.** `internal/contract/schemas/` holds
 a byte-identical copy of core's manifest schema, pinned by sha256 in

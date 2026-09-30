@@ -1,0 +1,29 @@
+# EXPECTED FAILURE — the JSON Schema accepts this file; the caf cross-field
+# rules in docs/manifest-conventions.md do not.
+#
+# Rule 1: every published event type starts with the publisher's own name.
+# Under core v0.2 the grammar has no exceptions — the first segment is always
+# the service — so `identity.api_key.created` is legal in identity and a bug in
+# billing, where it forks the topic away from the publisher's own subscription.
+#
+# This fixture is worth its own file because the schema cannot catch it: both
+# types are three segments, both are lowercase, and the pattern is satisfied.
+# Only comparing `exposes.events` against `name` finds it.
+name: billing
+description: A manifest that publishes another service's event.
+language: ruby
+core: ^0.2.0
+
+exposes:
+  events:
+    - billing.invoice.created
+    - identity.api_key.created
+
+repository:
+  url: git@github.com:cafaye/billing.git
+  defaultBranch: master
+  visibility: public
+
+owner:
+  team: billing
+  contact: billing@cafaye.com

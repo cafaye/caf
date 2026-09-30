@@ -1,0 +1,33 @@
+# cafaye.yml — courier: a background worker. No inbound HTTP, but it publishes events.
+name: courier
+description: Transactional email, push delivery, notification preferences, outbound webhooks.
+language: elixir
+core: ~0.2.0
+
+exposes:
+  events:
+    - courier.email.queued
+    - courier.email.delivered
+    - courier.email.bounced
+    - courier.email.complained
+    - courier.notification.suppressed
+
+consumes:
+  - identity.member.invited
+  - identity.user.created
+  - billing.subscription.started
+  - billing.payment.succeeded
+
+dependencies:
+  - name: identity
+    version: ^0.1.0
+    required: false
+
+repository:
+  url: git@github.com:cafaye/courier.git
+  defaultBranch: master
+  visibility: public
+
+owner:
+  team: courier
+  contact: courier@cafaye.com

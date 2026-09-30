@@ -1,0 +1,33 @@
+# cafaye.yml — identity: a Go service that serves an HTTP API and publishes events.
+# Validated by tests/test_specs.py against schemas/cafaye.manifest.schema.json.
+name: identity
+description: Authentication, sessions, MFA, OAuth, accounts/tenancy and the OIDC provider.
+language: go
+core: ^0.2.0
+
+exposes:
+  api: openapi/openapi.yaml
+  events:
+    - identity.user.created
+    - identity.user.email_verified
+    - identity.account.created
+    - identity.member.invited
+    - identity.member.joined
+    - identity.member.removed
+    - identity.member.role_changed
+    - identity.mfa.enabled
+    - identity.mfa.disabled
+    - identity.session.revoked
+    # Same shape as the rest of the list: the publisher's own name is the first
+    # segment of every event type, generic entity or not. See docs/event-naming.md.
+    - identity.api_key.created
+    - identity.api_key.revoked
+
+repository:
+  url: git@github.com:cafaye/identity.git
+  defaultBranch: master
+  visibility: public
+
+owner:
+  team: identity
+  contact: identity@cafaye.com

@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/cafaye.manifest.schema.json",
+  "title": "cafaye service manifest",
+  "description": "Schema for cafaye.yml, the per-service manifest every cafaye repository carries. A manifest is the one place that declares a service's identity, its core spec constraint, the contract surface it exposes and consumes, and who owns it. Cross-field rules that JSON Schema cannot express (a published event type must be prefixed by the publishing service; a service never consumes its own events; a consumed type must exist in the core catalog; exposes.api is required for any service that serves traffic) are documented in docs/manifest-conventions.md and enforced by tests/test_specs.py.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "language", "core", "repository", "owner"],
+  "properties": {
+    "name": {
+      "$ref": "#/$defs/serviceName",
+      "description": "The cafaye namespace name. Also the repository name and the value used as the event envelope `source`."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "One sentence on what the service is for. Shown by `caf new` and by pantry."
+    },
+    "language": {
+      "description": "Implementation language, or `spec` for specification-only repositories (core itself, contract-test fixtures).",
+      "enum": ["go", "ruby", "elixir", "python", "typescript", "rust", "spec"]
+    },
+    "core": {
+      "$ref": "#/$defs/semverRange",
+      "description": "Constraint on the core spec version this service was written against, e.g. ^0.1.0. Service CI pins core to a release inside this range."
+    },
+    "exposes": {
+      "type": "object",
+      "description": "The contract surface this service publishes. Omit entirely for libraries and specification-only repositories; a service that serves or receives traffic must declare at least one of api/events.",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "api": {
+          "$ref": "#/$defs/openapiRef",
+          "description": "Repository-relative path to the OpenAPI 3.1 document describing the HTTP surface."
+        },
+        "events": {
+          "type": "array",
+          "description": "Event types this service publishes, as <service>.<entity>.<action>. The first segment must be this manifest's own `name`; see docs/event-naming.md.",
+          "items": { "$ref": "#/$defs/eventType" },
+          "uniqueItems": true
+        }
+      }
+    },
+    "consumes": {
+      "type": "array",
+      "description": "Event types this service subscribes to, as <service>.<entity>.<action>. The prefix names the publisher, which is never this service. Delivery is at-least-once, so every consumer must be idempotent.",
+      "items": { "$ref": "#/$defs/eventType" },
+      "uniqueItems": true
+    },
+    "dependencies": {
+      "type": "array",
+      "description": "Other cafaye services this service builds on. Sync dependencies, not a package manager.",
+      "items": { "$ref": "#/$defs/serviceRef" },
+      "uniqueItems": true
+    },
+    "repository": { "$ref": "#/$defs/repository" },
+    "owner": { "$ref": "#/$defs/owner" }
+  },
+  "$defs": {
+    "serviceName": {
+      "type": "string",
+      "description": "cafaye namespace rule: lowercase kebab-case, starting with a letter, no trailing separator. 2-40 characters. Reserved: cafaye, caf, kit, core.",
+      "minLength": 2,
+      "maxLength": 40,
+      "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$"
+    },
+    "eventType": {
+      "type": "string",
+      "description": "Event type: <service>.<entity>.<action>, exactly three segments. The first segment is a cafaye service name (kebab-case) and must be the publishing service's own `name`; the entity and action segments are lowercase snake_case. See docs/event-naming.md.",
+      "minLength": 5,
+      "maxLength": 120,
+      "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*\\.[a-z][a-z0-9]*(_[a-z0-9]+)*\\.[a-z][a-z0-9]*(_[a-z0-9]+)*$"
+    },
+    "semverRange": {
+      "type": "string",
+      "description": "cafaye semver constraint: ^MAJOR.MINOR.PATCH, ~MAJOR.MINOR.PATCH, >=MAJOR.MINOR.PATCH, or an exact MAJOR.MINOR.PATCH. Prereleases are out of scope for v0.",
+      "pattern": "^(\\^|~|>=)?[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "openapiRef": {
+      "type": "string",
+      "description": "Repository-relative path to an OpenAPI 3.1 document (.yaml, .yml or .json). No leading ./, no absolute paths, no URLs.",
+      "minLength": 5,
+      "maxLength": 200,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9._-]+)*\\.(ya?ml|json)$"
+    },
+    "serviceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "$ref": "#/$defs/serviceName" },
+        "version": {
+          "$ref": "#/$defs/semverRange",
+          "description": "Constraint on the dependency's own contract version."
+        },
+        "required": {
+          "type": "boolean",
+          "default": true,
+          "description": "false marks a soft dependency: the service runs without it, degraded."
+        }
+      }
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url"],
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "SSH remote only. HTTPS remotes for cafaye/anywaye repos are a policy violation (PLAN.md §1).",
+          "pattern": "^(git@github\\.com:[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(\\.git)?|ssh://git@github\\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(\\.git)?)$"
+        },
+        "defaultBranch": { "const": "master" },
+        "visibility": { "enum": ["public", "private"] }
+      }
+    },
+    "owner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["team"],
+      "properties": {
+        "team": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 40,
+          "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$",
+          "description": "Owning team in the cafaye namespace."
+        },
+        "contact": {
+          "type": "string",
+          "format": "email",
+          "description": "Reachable mailbox for contract and incident questions."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,26 @@
+# cafaye.yml — core: the manifest format and contract conventions that every
+# cafaye service compiles against.
+#
+# Specs are manager-owned. A worker drafts a change to this repository, marks
+# its open questions with `> DECISION NEEDED:` callouts, and the manager
+# decides. See AGENTS.md.
+#
+# core is a specification repository, so it publishes no contract surface of
+# its own and `exposes` is omitted — the same shape a library takes. `core` is
+# the one reserved namespace name this repository is allowed to use, and it
+# uses it for itself.
+#
+# Validated by tests/test_specs.py against schemas/cafaye.manifest.schema.json.
+name: core
+description: The cafaye manifest format, event envelope and contract conventions every service compiles against.
+language: spec
+core: ^0.2.0
+
+repository:
+  url: git@github.com:cafaye/core.git
+  defaultBranch: master
+  visibility: public
+
+owner:
+  team: core
+  contact: core@cafaye.com

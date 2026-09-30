@@ -114,6 +114,12 @@ type Stack struct {
 	// Project is the compose project name, which is also the name of every
 	// container and network in the stack.
 	Project string
+	// Root is the service whose repository this is — the one being developed,
+	// as opposed to the ones it depends on. It is carried separately from
+	// Project because the two are different strings: the project is named for
+	// the stack, the root for the service, and a report that confuses them
+	// prints the verdict against a service that is not in the stack.
+	Root string
 	// Compose is the rendered document, byte for byte what gets written to disk.
 	Compose string
 	// Services is every service, sorted by name.
@@ -197,7 +203,7 @@ func Plan(manifest contract.Manifest, reg Registry, opts Options) (Stack, error)
 		// A repository of documents has no process and no local stack. The plan
 		// is empty and the command says so, rather than starting a database for
 		// a repository that ships no code.
-		return Stack{Project: project, Compose: renderCompose(project, nil, nil)}, nil
+		return Stack{Project: project, Root: manifest.ServiceName(), Compose: renderCompose(project, nil, nil)}, nil
 	}
 
 	services, err := r.collect()
@@ -214,6 +220,7 @@ func Plan(manifest contract.Manifest, reg Registry, opts Options) (Stack, error)
 	sorted := sortServices(services)
 	return Stack{
 		Project:  project,
+		Root:     r.service,
 		Compose:  renderCompose(project, sorted, declaredVolumes(sorted)),
 		Services: sorted,
 		Start:    startOrder(sorted),

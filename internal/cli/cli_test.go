@@ -114,7 +114,7 @@ func TestRunDispatch(t *testing.T) {
 			name:     "too many arguments is a usage error",
 			args:     []string{"dev", "identity", "billing"},
 			wantCode: 2,
-			wantErr:  []string{"wants 1 argument"},
+			wantErr:  []string{"wants at most 1 argument", "a project directory"},
 		},
 		{
 			name:     "flags before arguments are parsed",

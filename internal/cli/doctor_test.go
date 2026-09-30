@@ -236,22 +236,42 @@ func findRow(report doctorReport, name string) (doctorRow, bool) {
 	return doctorRow{}, false
 }
 
-// parseDoctorRows reads a printed report back as name -> status. The status
-// token is the anchor so multi-word names such as "docker compose" survive.
+// doctorStatuses is every status word a doctor row can carry. The tool table
+// uses two of them and the project section uses the rest, and they are pinned
+// because a script greps for them and a report whose vocabulary drifts is a
+// report nobody can read in a CI log.
+var doctorStatuses = []string{
+	"unreachable", "too little", "too few", "in use", "unknown",
+	"ok", "missing", "free",
+}
+
+// parseDoctorRows reads a printed report back as name -> status. The status is
+// the anchor, matched as a whole phrase between spaces, so a multi-word name
+// such as "docker compose", a multi-word status such as "too little", and a row
+// whose name starts with a status word — "toolchain go" — all survive.
 func parseDoctorRows(out string) map[string]string {
 	rows := map[string]string{}
 	for _, line := range strings.Split(out, "\n") {
-		if strings.HasPrefix(line, "tool") || strings.HasPrefix(line, "checked") {
+		name, status, found := cutStatus(line)
+		if !found {
 			continue
 		}
-		for _, status := range []string{"ok", "missing"} {
-			if i := strings.Index(line, " "+status+" "); i > 0 {
-				rows[strings.TrimSpace(line[:i])] = status
-				break
-			}
-		}
+		rows[name] = status
 	}
 	return rows
+}
+
+// cutStatus splits a row into its name and its status. Longest status first, so
+// "too little" is not found as the tail of a longer phrase.
+func cutStatus(line string) (string, string, bool) {
+	for _, status := range doctorStatuses {
+		at := strings.Index(line, " "+status+" ")
+		if at <= 0 {
+			continue
+		}
+		return strings.TrimSpace(line[:at]), status, true
+	}
+	return "", "", false
 }
 
 func fakeLookPath(found ...string) func(string) (string, error) {

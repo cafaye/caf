@@ -24,7 +24,6 @@ type stubCommand struct {
 // behavior test of its own, the way version_test.go and doctor_test.go do.
 var stubCommands = []stubCommand{
 	{name: "deploy", args: 1, flags: []string{"-env", "production", "-dry-run"}},
-	{name: "dev", args: 1, flags: []string{"-service", "identity", "-no-tui"}},
 	{name: "gen", args: 1, flags: []string{"-out", "dist", "-force"}},
 	{name: "init", args: 0, flags: []string{"-dir", "app", "-force"}},
 	{name: "mcp", args: 0, flags: []string{"-transport", "http"}},
@@ -33,7 +32,7 @@ var stubCommands = []stubCommand{
 
 // workingCommands are the subcommands that are not stubs because they already
 // work. They are pinned by their own behavior tests.
-var workingCommands = []string{"contract", "doctor", "version"}
+var workingCommands = []string{"contract", "dev", "doctor", "version"}
 
 // invocation builds a valid command line for a stub: its flags, then the
 // positional arguments it wants.

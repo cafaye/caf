@@ -8,6 +8,17 @@ All notable changes to caf are recorded here. The format follows
 
 ### Added
 
+- **`LICENSE`: caf is MIT.** The repository shipped no licence file, which is
+  not "unlicensed, therefore free" — it is **all rights reserved**, the default
+  copyright position when a public repository grants nothing. caf is the tool
+  every cafaye service is built with, so its licence is the first thing a
+  stranger reads.
+
+  Go modules carry no licence field, so there is no manifest to reconcile and
+  the file is the whole grant. The copyright line matches the three
+  repositories that already shipped a licence exactly: `Copyright (c) 2026
+  cafaye`.
+
 - **A gate declaration** (`gate.yml`). caf now says what its gate is, what the
   gate needs from the machine, and what the gate's own output must contain
   before the word "passed" means anything. The format is `cafaye/core`'s

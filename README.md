@@ -815,3 +815,13 @@ Phase 0 (v0, now):
 - [ ] shell completions
 
 See [AGENTS.md](AGENTS.md) for the conventions this repository follows.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
+
+caf is meant to be consumed as a dependency of a cafaye service, and the whole
+point of the service-registry model is that adding a platform dependency does
+not change a consumer's own licensing situation. That is why this is MIT and not
+a copyleft licence, and it is the reason for it fleet-wide rather than a
+per-repository decision.

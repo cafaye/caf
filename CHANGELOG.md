@@ -27,11 +27,11 @@ All notable changes to caf are recorded here. The format follows
   its last two lines are the only countable output this gate has:
 
   ```
-  caf: 10 packages, 432 top-level passes, 537 subtest passes, 0 failures, 3 skips
+  caf: 10 packages, 435 top-level passes, 537 subtest passes, 0 failures, 3 skips
   caf: live tier: 0 of 2 executed; not enabled, so the two live tests skipped rather than ran. …
   ```
 
-  Three floors are read out of the first line — 10 packages, 432 top-level tests,
+  Three floors are read out of the first line — 10 packages, 435 top-level tests,
   537 subtests — and the second is matched by a floorless `live-tier` proof whose
   pattern carries the tier size as a literal. A skipped live tier that is not
   stated in the gate's own output cannot be a silent pass: delete the line and
@@ -87,11 +87,48 @@ All notable changes to caf are recorded here. The format follows
 
 ### Fixed
 
-- Nothing that changes behaviour. The two findings this packet turned up in
+- **The suite floor, which the merge made wrong in the same commit that
+  introduced it.** caf-07 branched from caf-06, added four tests, and set
+  `minimum: 432` from the 435 its own tree declared. caf-09 then landed on
+  master underneath it. Each packet was correct about the tree it could see;
+  merging them put caf-07's four on top of caf-09's three, for 438 declared,
+  and left a floor three below what runs. Raised to the measured **435**, with
+  the identity the declaration asserts now true on both sides —
+  `declared (438) - floor (435) == 3 skips`.
+
+  Worth writing down because **the merge is what broke it, and nothing in
+  either packet's own run could have noticed.** A floor is a claim about the
+  present, and every other merge invalidates it without touching the file. This
+  is the third repository in a row to drift this way: billing's floor sat 187
+  below its suite and nothing complained, because nothing there checked the
+  identity, and its self-test reported a green that was proving nothing. It is
+  caught red here only because caf-07 also wrote
+  `TestTheGateFloorIsNotBelowTheSuiteCafClaimsToHave` — **the check that would
+  have caught billing's is the check that caught this.** The rule that follows:
+  a floor is owed a re-measurement in the merge that moves the tree, and the
+  merge is the only place that knows.
+
+  caf-09's own report predicted 434/437 for this line and was one short in both
+  — it measured its branch as 430 passes + 3 skips = 433 where the branch is
+  434 — so the number here is measured, not predicted.
+
+- **The self-test's stand-in gate carried a second copy of that number.** Raising
+  the floor turned `tests/gate-declaration-self-test.sh`'s stand-in control red
+  with `gate.floor`, because the stand-in printed a hardcoded `432` where the
+  declaration now promised 435. **The checker was right and the test was
+  carrying the defect**: the same shape as billing's self-test, one repo over,
+  and the fix is the same one — the stand-in now reads the `suite` proof's floor
+  out of `gate.yml` and prints that, so there is one place the number lives and
+  the next packet that adds a test cannot make it stale. A stand-in that does
+  not go green when the real gate is green has stopped being a control, and the
+  reason it went red here is the same reason this gate is trustworthy.
+
+- Nothing else that changes behaviour. The two findings this packet turned up in
   `internal/ryuk` — a settle window that is never transmitted, and a live test
   whose whole-machine assertion cannot pass on a shared machine — are **reported
-  and not fixed**, because a fix belongs in a packet about `internal/ryuk` and
-  not in a rider here. See `REPORT-caf-07-gate.md`.
+  and not fixed** here, because a fix belongs in a packet about `internal/ryuk`
+  and not in a rider on the gate. caf-09 is that packet and has since fixed the
+  settle window. See `REPORT-caf-07-gate.md` and `REPORT-caf-09-mcpwire.md`.
 
 - **The reclamation ledger** (`internal/ledger`). Every stack caf brings up is
   written to a ledger **before** the resource is created, so a caf killed

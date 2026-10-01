@@ -164,8 +164,33 @@ write() { cat > "$1"; }
 # The two lines below are copied character for character out of a real
 # `bin/prime` run on this tree, because a stand-in that prints a paraphrase is
 # a stand-in that proves the paraphrase matches.
+#
+# WITH NO COUNT, THE COUNT IS READ OUT OF `gate.yml` AND NOT WRITTEN DOWN HERE.
+# It was `432` in this file until the floor moved to 435, and the stand-in
+# control went red naming `gate.floor` — which is the checker working and this
+# script carrying the defect billing's did. The number was in two files and the
+# merge made one of them wrong; the fix is not to write down 435 instead, which
+# would break the same way on the next packet that adds a test. It is to have
+# one place that says it. Read the same way the ratchet in `internal/ci` reads
+# it, from the `suite` proof's own floor, so the stand-in is green by
+# construction against whatever the declaration currently claims.
+suite_floor() {
+  sed -n '/^    - id: suite$/,/^    - id: /{s/^      minimum: \([0-9][0-9]*\)$/\1/p;}' \
+    "$ROOT/gate.yml" | head -1
+}
+
 install_standin() {
-  local dir="$1" passes="${2:-432}"
+  local dir="$1" passes="${2:-}"
+  if [ -z "$passes" ]; then
+    passes="$(suite_floor)"
+    if [ -z "$passes" ]; then
+      echo "gate-declaration-self-test: no suite floor found in $ROOT/gate.yml." >&2
+      echo "  If the declaration's shape changed, fix suite_floor — do not put the" >&2
+      echo "  number back in this file, which is how it went stale the first time." >&2
+      failures=$((failures + 1))
+      return 1
+    fi
+  fi
   write "$dir/bin/prime" <<STUB
 #!/usr/bin/env bash
 # A stand-in for bin/prime, written by tests/gate-declaration-self-test.sh.
@@ -517,8 +542,10 @@ expect_red 'a floor with no capture group to read it from, against a gate that r
   "$b" 'gate.proof-invalid' --prove
 
 # The floor, against a gate that reports FEWER tests than the declaration
-# promised. The stand-in prints 40 where the floor is 432, and `gate.floor` is
-# what the checker says.
+# promised. The stand-in prints 40 where the floor is well above it, and
+# `gate.floor` is what the checker says. The 40 is a literal on purpose — it is
+# the stand-in's one caller that passes a count, and it must stay far below
+# whatever the floor currently is.
 #
 # A stand-in rather than the real gate, and the reason is worth recording
 # because it took a real run to find: this case cannot use the real
@@ -533,7 +560,7 @@ expect_red 'a floor with no capture group to read it from, against a gate that r
 #
 # Which is not a gap. The relationship between this floor and this repository's
 # real test count is asserted from three other sides: control 2 above (the real
-# gate prints 432 against a floor of 432 and is green), and the two
+# gate prints 435 against a floor of 435 and is green), and the two
 # `internal/ci` tests that read the tree. What is left for this case is the
 # checker's own floor arithmetic, and a stand-in exercises that exactly.
 b="$(fresh_copy floor)"

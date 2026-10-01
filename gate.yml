@@ -102,34 +102,51 @@ gate:
       minimum: 10
     - id: suite
       match: '^caf: [0-9]+ packages, ([0-9]+) top-level passes, [0-9]+ subtest passes, 0 failures, [0-9]+ skips$'
-      # 432, measured, and the number is the interesting part of this file.
+      # 435, measured, and the number is the interesting part of this file.
       #
       # It is a DECREASE-DETECTOR, read from the LAST match: a suite that
       # quietly lost forty tests cannot report itself as passing. 1/1 passes
       # and 3/3 passes are the same claim without a floor, which is the entire
       # argument for `gate.proof[].minimum` existing.
       #
-      # 432 is 428 as caf-06 left it, plus the four tests this packet adds to
-      # `internal/ci` (`TestTheGateAccountsForEveryLiveTest`,
-      # `TestTheGateReportsItsOwnCounts`,
-      # `TestTheGateFloorIsNotBelowTheSuiteCafClaimsToHave` and
-      # `TestTheGateFloorIsNotAWall`). Not a round number and not an estimate:
-      # `bin/prime` printed 432 on this tree, once cold and once replayed from
-      # Go's test cache, which is worth saying because `-count=1` is
-      # deliberately NOT in the gate — adding it would change what a green
-      # `bin/prime` means (AGENTS.md, "Gates").
+      # 435 is 432 as caf-07 left it, plus three more, and the three are
+      # counted rather than assumed: 431 declared as caf-06 left it, caf-07's
+      # four to reach 435, caf-09 landing underneath and moving master to 434,
+      # and this merge putting caf-07's four on top of that for 438. caf-09's
+      # own report predicted 434/437 for this line and was one short in both,
+      # because it measured its branch as 430 passes + 3 skips = 433 declared
+      # where the branch is 434; so the number below is the measured one and not
+      # the predicted one. Not a round number and not an estimate: `bin/prime`
+      # printed 435 on this tree, once cold and once replayed from Go's test
+      # cache, which is worth saying because `-count=1` is deliberately NOT in
+      # the gate — adding it would change what a green `bin/prime` means
+      # (AGENTS.md, "Gates").
+      #
+      # IT WAS NOT 435 WHEN caf-07 MEASURED IT, and that is the whole reason
+      # this number is being rewritten in a merge commit rather than in the
+      # packet that wrote it. caf-07 branched from caf-06, added its own four,
+      # and set the floor from the tree it could see. caf-09 then landed on
+      # master underneath it. Each packet was correct about its own tree; the
+      # merge is what made both floors wrong, and it did so silently, because a
+      # floor is a claim about the present and every other merge invalidates it
+      # without touching this file. Nothing in either packet's own run could have
+      # caught it. This is the third repository in a row where a floor drifted
+      # below the suite it describes — billing's went unnoticed and produced a
+      # false green, and this one is caught red only because caf-07 also wrote
+      # the test that checks the identity, which is the whole reason it went red
+      # here and not there.
       #
       # IT IS ALSO A SKIP DETECTOR, and that is a consequence rather than a
-      # design. The tree declares 435 top-level tests; three of them are the two
+      # design. The tree declares 438 top-level tests; three of them are the two
       # live tests and the re-exec'd child, and on this machine exactly those
-      # three skip and all 432 run. So the identity
+      # three skip and all 435 run. So the identity
       #
-      #     declared (435) - this floor (432) == 3 skips
+      #     declared (438) - this floor (435) == 3 skips
       #
       # holds on both sides, and `internal/ci` asserts it exactly — in both
       # directions — so a test added without this line raised is a red, and so is
       # a skip that appeared without it. Run this gate as root and
-      # `TestLintReportsAnUnreadableManifest` skips, 431 is reported, and the
+      # `TestLintReportsAnUnreadableManifest` skips, 434 is reported, and the
       # gate goes red. That is correct, and it is the same property
       # `.github/workflows/ci.yml`'s `root-gated` job asserts by hand, reached
       # here without a second workflow step.
@@ -143,7 +160,7 @@ gate:
       # not go red. `TestTheGateFloorIsNotBelowTheSuiteCafClaimsToHave` is the
       # exact version, and it was watched going red on this very floor before
       # this number was corrected.
-      minimum: 432
+      minimum: 435
     - id: subtests
       match: '^caf: [0-9]+ packages, [0-9]+ top-level passes, ([0-9]+) subtest passes, 0 failures, [0-9]+ skips$'
       # 537, measured, and it is a different detector from the one above.

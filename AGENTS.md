@@ -22,8 +22,10 @@ internal/ledger/    the reclamation ledger: what caf created, so cleanup is not 
 internal/ports/     the port block, the reservation that holds a port, the prober
 internal/reclaim/   the sweep's container-runtime seam, scoped to one project
 internal/ryuk/      the reaper lease client, for testcontainers' Ryuk
-internal/ci/        no code; the test that keeps .github/workflows/ci.yml honest
-bin/prime           the gate: go mod download && go build ./... && go test ./...
+internal/ci/        no code; the tests that keep .github/workflows/ci.yml and bin/prime honest
+bin/prime           the gate: go mod download && go build ./... && go test -v ./... , then say what ran
+gate.yml            what the gate is, what it needs, and what its own output must contain
+tests/              the self-test that proves gate.yml can go red; not part of bin/prime
 .github/workflows/  ci.yml calls kit's shared workflow; two jobs carry what kit cannot know
 ```
 
@@ -306,7 +308,13 @@ Docker socket mounted is started, and a control container plus a sibling worker'
 resources asserted intact afterwards. **Read those comments before running one on
 a machine that is not yours.**
 
-`internal/ci` holds the other two checks, and one of them is a gate cost worth
+caf-07 added the third way to run them, `bin/prime --live`, and the declaration
+that keeps the tier accounted for. That is the next section, and it supersedes
+the first two paragraphs of this one as the current answer to "why is the live
+tier not in the gate" — this section is kept because the *files* are still the
+thing you must read before running either of them.
+
+`internal/ci` holds the other checks, and one of them is a gate cost worth
 knowing about: `TestTheTreeBuildsForEveryReleaseTarget` cross-compiles the whole
 tree for every `goos` in `.goreleaser.yml`, which is about fifteen seconds of a
 cold build. It earns that, because it is the only thing in the repository that
@@ -316,24 +324,106 @@ there since `doctor`'s memory probe was written for two platforms.
 ## Gates
 
 ```sh
-bin/prime          # go mod download && go build ./... && go test ./...
+bin/prime            # go mod download && go build ./... && go test -v ./... , then say what ran
+bin/prime --live     # the same, with the two live tests running instead of skipping
 go vet ./...
-gofmt -l .         # must print nothing
+gofmt -l .           # must print nothing
 ```
 
 All three are required before a commit lands. `go vet` and `gofmt` are not in
 `bin/prime`; run all three.
 
+**`gate.yml` at the repository root is the declaration of all this.** The format
+is `cafaye/core`'s `schemas/gate.schema.json`, the checker is its
+`harness/gate_check.py`, and the reasoning is its `docs/gate.md` — including the
+two alternatives that were measured and rejected. Three consequences for this
+repository, and they are rules rather than notes:
+
+- **`bin/prime`'s last two lines are load-bearing.** They are the only countable
+  output this gate has, and `gate.yml`'s three floors are read out of the first
+  of them. `go test` on its own prints one `ok <pkg>` line per package and no
+  test count at all, so before caf-07 there was nothing in this tree a floor
+  could be read from. The accounting section is not decoration and
+  `internal/ci`'s `TestTheGateReportsItsOwnCounts` fails if either line changes
+  shape. If you reformat them, fix `gate.yml` in the same commit.
+- **Adding a test fails the gate until `gate.yml`'s floor is raised.** That is
+  `TestTheGateFloorIsNotBelowTheSuiteCafClaimsToHave`, and it is core's ratchet.
+  The identity it holds is `declared - minimum == 3` — the three are the two
+  live tests and the re-exec'd child, named at the constant. It is exact in both
+  directions, so a test that starts skipping is caught the same way. **Raise the
+  number; do not edit the assertion.**
+- **`tests/gate-declaration-self-test.sh` is the control over the control.** It
+  copies this repository's declaration, breaks exactly one thing at a time, and
+  asserts core's checker goes red and *names* the finding. It is not part of
+  `bin/prime` — a self-test inside every gate invocation would be a second gate
+  that can disagree with the first. Run it before landing a change to `gate.yml`,
+  `bin/prime`'s summary, or the CI workflow's gate step. A stale recipe in it
+  fails loudly rather than passing.
+
+To check the declaration from core, without running anything:
+
+```sh
+../core/harness/bin/gate-check .            # the static half
+../core/harness/bin/gate-check --prove .    # and the proving half, which runs bin/prime
+```
+
 `bin/prime` is **not** kit's Go template and does not claim to be. It is
-cafaye's own three lines, and it is the gate CI runs, because a CI-only variant
-of a gate is worse than no gate: two commands that can disagree, one of them
+cafaye's own, and it is the gate CI runs, because a CI-only variant of
+a gate is worse than no gate: two commands that can disagree, one of them
 nobody runs locally, and a green badge that means the one nobody runs. Adopting
 kit's template is a decision, not a chore — it would add `go vet`, `-count=1`
 and a `--fast` flag, and each of those changes what a green `bin/prime` means.
+`-count=1` is **deliberately still not there**: `go test` replays a cached run's
+verbose output verbatim, so a second `bin/prime` on an unchanged tree reports the
+same numbers as the first, and the floors read the same either way.
 
 Coverage is 89.1% and the CI gate is 85% (`.github/workflows/ci.yml`). Both
 numbers move as code lands; raise the gate when the floor does, never the other
 way round.
+
+## The live tier, and why it is not in the gate
+
+`bin/prime --live` sets `CAF_LIVE_DOCKER=1` and `CAF_LIVE_RYUK=1` and runs the
+two live tests instead of skipping them. It is a second mode and not the declared
+gate, for three measured reasons, all in `REPORT-caf-07-gate.md`:
+
+1. `TestTheSilentCollisionIsReal` asserts a blind spot of a **particular**
+   container runtime. On a runtime that arbitrates properly its subtests
+   `t.Fatalf` rather than skip, so a gate carrying it would be red on every
+   GitHub-hosted runner, which is plain dockerd.
+2. `TestAClosedLeaseReapsAndAnOpenOneDoesNot` is currently red on the machine
+   caf-06's report says it was verified on.
+3. `bin/prime` must run on a bare CI runner. That has been the rule here since
+   caf-06 and nothing in this packet reverses it.
+
+**The live tier is not silently absent, and that is what the declaration is for.**
+Every run prints `caf: live tier: 0 of 2 executed` and `gate.yml` has a
+`live-tier` proof that matches it, so a run in which the tier did not execute
+says so in a line the declaration requires. Delete the line and the gate is
+red. `--live` is the mode in which it *cannot* silently not run: it exits
+nonzero if the tier did not execute, and
+`tests/gate-declaration-self-test.sh` proves that by running it on a PATH with
+no container runtime on it.
+
+`internal/ports/live_test.go` and `internal/ryuk/live_test.go` stay in the tree,
+as ordinary `go test` code, rather than as scripts in a directory nobody runs — a
+demonstration that lives outside the suite is a demonstration that rots. Each one
+carries the safety rules its own risk demands in its own comments: a scratch port
+outside 15000-15999, a label on everything it creates, a filter asserted non-empty
+and matching nothing before a reaper with the Docker socket mounted is started,
+and a control container plus a sibling worker's resources asserted intact
+afterwards. **Read those comments before running one on a machine that is not
+yours** — and note that the second one's whole-machine assertion is currently too
+strict to be reliable on a shared one.
+
+`internal/ci` holds the other checks, and one of them is a gate cost worth
+knowing about: `TestTheTreeBuildsForEveryReleaseTarget` cross-compiles the whole
+tree for every `goos` in `.goreleaser.yml`, which is about fifteen seconds of a
+cold build. It earns that, because it is the only thing in the repository that
+would have noticed `caf` did not compile for Windows at all — a gap that had been
+there since `doctor`'s memory probe was written for two platforms.
+
+
 
 ## Adding a subcommand
 
@@ -343,7 +433,8 @@ way round.
 3. Add it to `stubCommands` in `internal/cli/stub_test.go` with the argument
    count it expects.
 4. Add the row to the README command table.
-5. `bin/prime`, `gofmt -l .`, `go vet ./...`.
+5. `bin/prime`, `gofmt -l .`, `go vet ./...` — and if the change added a test,
+   raise the floor in `gate.yml` in the same commit, or step 5 will tell you so.
 
 A subcommand that groups verbs (`caf contract lint`) does all of that and one
 more: each verb is a `Command` of its own, named with its full invocation so

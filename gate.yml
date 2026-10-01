@@ -1,0 +1,329 @@
+# gate.yml — how caf is gated, declared rather than guessed.
+#
+# WHY THIS FILE EXISTS. cafaye/core owns the format
+# (`schemas/gate.schema.json`), the checker (`harness/gate_check.py`) and the
+# reasoning (`docs/gate.md`). Across the fifteen repositories in the cafaye
+# workspace "run the gate" had five different spellings, and every one of them
+# was found by a human getting it wrong. This is caf's, and every number in it
+# was measured on this tree at de25e37 + caf-07 — not copied from core's, not
+# from another service's, and not rounded.
+#
+# THE GAP THIS CLOSES, in one sentence. `caf-06` merged 12,480 lines across 60
+# files, five of them new packages — `internal/ledger`, `internal/ports`,
+# `internal/reclaim`, `internal/ryuk` and a CLI surface — into a service whose
+# entire job is to notice that a port is occupied and to reclaim what is not,
+# and the declaration that says so did not exist. A service that cannot fail is
+# worse than no service, because it is trusted.
+#
+# WHAT THE CHECKER PROVES ABOUT THIS FILE, AND WHAT IT DOES NOT. It proves the
+# command resolves, `bin/prime` exists and is executable, `mise run prime`
+# resolves to that same file, the CI workflow really invokes it, and — the part
+# that matters — that running the gate makes every proof below appear, with the
+# three countable ones at or above their floors. It does NOT prove the tests
+# touched anything they claim to, and it does not prove a requirement is
+# satisfied: a requirement is the operator's to satisfy, before gating. Both
+# halves of that are recorded in core's `harness/gate_findings.json` under
+# `notEnforced`, and neither is restated here as if this file closed it.
+#
+# WHAT THIS DECLARATION DELIBERATELY DOES NOT CLAIM. It does not claim the
+# container tier ran. caf's live tests assert a property of a *particular*
+# container runtime, one of them is red on the machine this was written on, and
+# both reasons are measured and written out at `gate.proof[].live-tier` and in
+# `external.requirements`. Read that section before concluding the gate covers
+# the whole tree.
+version: 1
+name: caf
+
+gate:
+  # An argv, never a shell string, so the exit code is the gate's own. This
+  # fleet's one recorded false green was `… | tail -45; echo "PRIME EXIT=$?"`
+  # under zsh, where `$?` is tail's and tail is always zero.
+  #
+  # `bin/prime`, not `mise run prime`. courier has to name mise because its
+  # `bin/prime` calls `mix local.hex --force` and dies without mise's shims on
+  # PATH; caf's does not — it calls `go`, `go list` and `grep` directly, and
+  # needs nothing mise installs to be found. So the shortest true argv is the
+  # script, and `mise run prime` is checked below to resolve to the same file.
+  command: [bin/prime]
+  # The fleet's spelling, cross-checked against `entrypoint` below, so the task
+  # a developer runs and the declaration cannot drift onto different files.
+  miseTask: prime
+  # The file behind the command, and the file `mise run prime` resolves to.
+  entrypoint: bin/prime
+  # Generous on purpose, and the measurement behind it is in this repository
+  # rather than in a guess: a warm `bin/prime` on darwin/arm64 with a populated
+  # module cache and build cache took 19.4s wall clock, of which 18.5s was
+  # `go test` across 10 packages. A cold checkout has to fetch the module
+  # closure, recompile the standard library for the toolchain and run
+  # `internal/ci`'s cross-compilation of every release target, which is minutes.
+  # A budget tight enough to be a bug detector is tight enough to be a flake
+  # generator on somebody's first run; this number exists to stop a hung gate,
+  # not to measure one.
+  timeoutSeconds: 1800
+  proof:
+    # Three countable floors and one presence proof, all read out of two lines
+    # `bin/prime` prints. They are on two lines because that is what the gate
+    # can honestly produce: `go test` has no suite-wide summary of its own, so
+    # the counts are counted by `bin/prime` out of `go test -v`'s `--- PASS:`
+    # lines. That is the whole reason `bin/prime` grew a `-v` and an accounting
+    # section in this packet — before it, `go test` printed one `ok <pkg>`
+    # line per package and no test count at all, and there was nothing in this
+    # repository a floor could be read from.
+    #
+    # Every pattern below is anchored at BOTH ends and includes the literal
+    # `0 failures`, which is not decoration. It means a floor can only ever be
+    # read out of a run in which nothing failed, so the number the ratchet sees
+    # is the number a green run reported and never the number on a line printed
+    # by a red one. That is the same trick courier's `^Result: ([0-9]+)
+    # passed$` uses to refuse a fractional `Result: 300/512 passed`, and the
+    # reason is the same: a proof that matches more shapes than it means is a
+    # proof that will eventually mean the wrong thing.
+    #
+    # No escape tolerance anywhere. The checker strips terminal escapes before
+    # it matches anything (core c63af27), so a `\x1b` workaround in a pattern
+    # would be re-creating the debt this file clears — `kit-15-fleet` is
+    # deleting exactly such workarounds elsewhere in the fleet. `go test` does
+    # not colourise when its output is not a terminal anyway.
+    - id: packages
+      match: '^caf: ([0-9]+) packages, [0-9]+ top-level passes, [0-9]+ subtest passes, 0 failures, [0-9]+ skips$'
+      # 10, measured with `go list ./...` on this tree, and it is 10 rather
+      # than the 9 `ok` lines `go test` prints because `cmd/caf` — the binary
+      # every other service's CI shells out to — has no test file and reports
+      # `[no test files]`. Counting it is the point: a floor on the `ok` lines
+      # alone would be satisfied by a tree in which the entrypoint had stopped
+      # being a package.
+      #
+      # This is the floor that answers requirement 2 of this packet. caf-06
+      # added five packages; a gate that quietly stopped covering one of them
+      # would still be green on the other four, and the test-count floors below
+      # would move by whatever was in the package that went missing. This one
+      # does not move at all, so the three together cannot be satisfied by a
+      # subset.
+      minimum: 10
+    - id: suite
+      match: '^caf: [0-9]+ packages, ([0-9]+) top-level passes, [0-9]+ subtest passes, 0 failures, [0-9]+ skips$'
+      # 432, measured, and the number is the interesting part of this file.
+      #
+      # It is a DECREASE-DETECTOR, read from the LAST match: a suite that
+      # quietly lost forty tests cannot report itself as passing. 1/1 passes
+      # and 3/3 passes are the same claim without a floor, which is the entire
+      # argument for `gate.proof[].minimum` existing.
+      #
+      # 432 is 428 as caf-06 left it, plus the four tests this packet adds to
+      # `internal/ci` (`TestTheGateAccountsForEveryLiveTest`,
+      # `TestTheGateReportsItsOwnCounts`,
+      # `TestTheGateFloorIsNotBelowTheSuiteCafClaimsToHave` and
+      # `TestTheGateFloorIsNotAWall`). Not a round number and not an estimate:
+      # `bin/prime` printed 432 on this tree, once cold and once replayed from
+      # Go's test cache, which is worth saying because `-count=1` is
+      # deliberately NOT in the gate — adding it would change what a green
+      # `bin/prime` means (AGENTS.md, "Gates").
+      #
+      # IT IS ALSO A SKIP DETECTOR, and that is a consequence rather than a
+      # design. The tree declares 435 top-level tests; three of them are the two
+      # live tests and the re-exec'd child, and on this machine exactly those
+      # three skip and all 432 run. So the identity
+      #
+      #     declared (435) - this floor (432) == 3 skips
+      #
+      # holds on both sides, and `internal/ci` asserts it exactly — in both
+      # directions — so a test added without this line raised is a red, and so is
+      # a skip that appeared without it. Run this gate as root and
+      # `TestLintReportsAnUnreadableManifest` skips, 431 is reported, and the
+      # gate goes red. That is correct, and it is the same property
+      # `.github/workflows/ci.yml`'s `root-gated` job asserts by hand, reached
+      # here without a second workflow step.
+      #
+      # That test is core's ratchet and caf now has it. This line is the only
+      # place in caf that writes down how many tests there are, and the first
+      # version of it in this packet was wrong in a way worth recording: it
+      # counted tests *containing* a `t.Skip` as the number the floor may not
+      # reach, which came out at fifteen because most of caf's skips are
+      # machine-capability ones that do not fire here, and the assertion could
+      # not go red. `TestTheGateFloorIsNotBelowTheSuiteCafClaimsToHave` is the
+      # exact version, and it was watched going red on this very floor before
+      # this number was corrected.
+      minimum: 432
+    - id: subtests
+      match: '^caf: [0-9]+ packages, [0-9]+ top-level passes, ([0-9]+) subtest passes, 0 failures, [0-9]+ skips$'
+      # 537, measured, and it is a different detector from the one above.
+      # 965 `--- PASS:` lines minus the 428 that were top-level, so 537. A test
+      # moved from `func TestX` to a subtest of another test keeps the suite
+      # floor's total and loses this one's, and only this floor notices. One
+      # number that counted everything would be satisfied by that refactor
+      # silently; two numbers that count different things are not.
+      minimum: 537
+    #
+    # THE ONE WITH NO FLOOR, and the schema sanctions that: a `minimum` is
+    # omitted "for a proof that reports nothing countable (a step that must
+    # appear in the log, a tier that must not say it skipped)". This is the
+    # second kind, and it is the load-bearing proof of the four.
+    #
+    # `bin/prime` prints, on every run in every mode, how many of the two live
+    # tests actually ran. So the fast gate is a run in which the container tier
+    # did not execute and the gate's own output says so, in a line the
+    # declaration matches. Delete that line from `bin/prime`, or move it, or
+    # rename it, and this proof never appears: `gate.proof-missing`, a FAILURE.
+    # A skip that a declaration requires to be *stated* cannot be a silent pass.
+    #
+    # The literal `2` in the pattern is the ratchet, and it is a triple ratchet
+    # kept honest by `internal/ci`: it is the size `bin/prime` writes in
+    # `LIVE_TIER`, the length of the `LIVE_TESTS` list beside it, and the size
+    # in this pattern, and `TestTheGateAccountsForEveryLiveTest` fails if those
+    # three and the tree's env-gated tests stop being the same set. A third live
+    # test added anywhere in this repository therefore turns this proof red
+    # until somebody updates all four places on purpose. That is the failure
+    # mode being bought: a demonstration that appears and is invisible to the
+    # declaration forever.
+    #
+    # WHY THERE IS NO `minimum` ON IT, which is a decision and not an
+    # oversight. A floor of 2 would be the honest reading of "the live tier
+    # must not be satisfiable by a run where it never executed" — and it would
+    # make the declared gate red on every machine without a container runtime,
+    # including a bare GitHub runner, for the whole of the ordinary suite. The
+    # declared gate is therefore the fast gate, and the enforcement of "the live
+    # tier must have run" lives in `bin/prime --live`, which exits nonzero when
+    # the tier did not execute. That mode exists for exactly this and is
+    # asserted by `tests/gate-declaration-self-test.sh`.
+    #
+    # The two measurements that decided it, both on this machine (OrbStack
+    # 29.4.0), both reproducible with one command each:
+    #
+    #   CAF_LIVE_DOCKER=1 go test -run TestTheSilentCollisionIsReal ./internal/ports/
+    #     -> PASS, 4.45s
+    #   CAF_LIVE_RYUK=1 go test -run TestAClosedLeaseReapsAndAnOpenOneDoesNot ./internal/ryuk/
+    #     -> FAIL: the reaper did not acknowledge the filter: … EOF
+    #
+    # The first is OrbStack-specific BY CONSTRUCTION, and not by accident of
+    # this machine: its first subtest is `t.Fatalf` when `docker run` succeeds
+    # in shadowing a host listener, and its second is `t.Fatalf` when a second
+    # container is allowed onto the same port. Both are failures, not skips, so
+    # on a runtime that arbitrates properly — plain dockerd, which is what
+    # `runs-on: ubuntu-latest` gives this repository's CI — the test does not
+    # degrade to a skip, it goes red. A gate carrying it would be red on every
+    # GitHub-hosted runner in the fleet.
+    #
+    # The second is red here, now, on the machine caf-06's own report says it
+    # was verified on. It is a finding, not a reason to shrink the tier, and it
+    # is not fixed by this packet: see REPORT-caf-07-gate.md.
+    - id: live-tier
+      match: '^caf: live tier: [0-9]+ of 2 executed'
+
+external:
+  # NOT self-contained, and saying so is the point. `bin/prime` needs a Go
+  # toolchain this repository pins rather than ships, and a module fetch on a
+  # cold checkout. A declaration that called this self-contained would be
+  # describing a gate nobody has ever run on a clean machine — the same defect
+  # as identity's suite being green against a database nobody had migrated,
+  # told the other way round.
+  selfContained: false
+  requirements:
+    - kind: toolchain
+      # The pin, from two places that already have to agree: mise.toml's
+      # `[tools] go` and go.mod's `go` directive, which `internal/ci` asserts
+      # against the literal CI passes to kit's reusable workflow. 1.25.0 is
+      # also the floor imposed by `internal/mcp`'s SDK, whose own directive is
+      # 1.25.0 — a module cannot depend on a patch release newer than its own
+      # directive claims.
+      name: Go 1.25.0 on PATH — the pin in mise.toml and in go.mod's go directive
+      satisfy:
+        # A bare name, so the checker reports `gate.requirement-unproven` and
+        # deliberately leaves the exit code alone. That is the correct
+        # severity: this is a claim about THIS MACHINE, and a checker that
+        # failed on it would be red on a laptop and green on CI.
+        #
+        # `mise install` is the command that materialises the pin, and it is
+        # not quite sufficient on its own: `bin/prime` calls `go` directly, so
+        # the toolchain has to be on PATH as well, which on this fleet means
+        # mise's shims (`mise activate`) or an explicit `mise exec`. The `unmet`
+        # line says so rather than leaving a reader to find out from a 127.
+        command: [mise, install]
+        unmet: >-
+          bin/prime exits 127 at its first step with "go: not found" or
+          "go: command not found" in the message
+    - kind: network
+      # "ONCE, on a cold checkout" and not flatly, because that is the honest
+      # scope: `go mod download` is `bin/prime`'s first step and it is the only
+      # step that touches the network. A warm gate was measured at 19.4s with
+      # the module cache populated and the network untouched, so calling this
+      # gate networked would over-claim a cost it does not always pay.
+      name: >-
+        the Go module proxy, ONCE, on a cold checkout only — three direct
+        dependencies and their closure. A warm gate needs no network.
+      satisfy:
+        # The argv that actually reaches the network, and it is a bare name for
+        # the same reason as the toolchain above.
+        command: [go, mod, download]
+        unmet: >-
+          go mod download exits nonzero on a cold checkout with no network, and
+          bin/prime never reaches go build
+    - kind: service
+      # THIS ONE IS NOT A REQUIREMENT OF THE DECLARED GATE, and it is listed
+      # anyway, because the alternative is a live tier that exists only in two
+      # files' comments. Read the whole of it:
+      #
+      #   * `bin/prime` — the command above — does NOT need a container
+      #     runtime. It runs green on a machine with no `docker` on PATH, and
+      #     that is a measured fact, not an assumption: it is what the three
+      #     `--- SKIP` lines on every run are.
+      #   * `bin/prime --live` DOES need one, and fails without it.
+      #
+      # So this entry is a requirement of the repository's *second* gate mode,
+      # recorded here so the operator knows what `--live` will ask of the
+      # machine before running it on one that is not theirs — which matters
+      # more than usual for this service, because `internal/ryuk/live_test.go`
+      # starts a container with the Docker socket mounted and a reaper that
+      # removes what a filter matches. That test asserts its own filter is
+      # non-empty and matches nothing before it starts, and asserts a control
+      # container and every pre-existing container on the machine are intact
+      # afterwards. Read those comments before running it anywhere that is not
+      # yours; the requirement being listed is not an endorsement of running it
+      # anywhere.
+      #
+      # WHAT IS DELIBERATELY NOT HERE, because listing it would be a different
+      # kind of lie: this requirement is conditional, and the three above are
+      # not.
+      name: >-
+        a container runtime, for `bin/prime --live` ONLY — the two live tests
+        that the declared gate skips. Not needed by `bin/prime` itself.
+      satisfy:
+        # A bare name, so it warns rather than failing. `docker version` rather
+        # than `docker --version` on purpose, and for the reason this
+        # repository's own `doctor` documents: `--version` succeeds whether or
+        # not a daemon is answering, so only `docker version` settles whether a
+        # runtime is actually there to start anything.
+        command: [docker, version]
+        unmet: >-
+          bin/prime --live exits nonzero with "no container runtime on PATH" from
+          live_test.go, or the live tier reports 0 of 2 executed
+  # NOT required, and named so nobody goes looking for them:
+  #   * no database and no service beyond the conditional one above. Nothing in
+  #     the gate opens a socket to anything but the loopback interface;
+  #     `internal/ports`' tests bind `127.0.0.1` and `::1` and nothing else.
+  #   * no credential, and no secret of any kind. caf reads no token, key or JWT
+  #     anywhere in this tree, and this declaration introduces none: every
+  #     `satisfy.command` above is a binary name. The live tier touches the
+  #     Docker socket, and the reaper connection carries a session label and
+  #     nothing else — a `key=value` filter that `internal/ryuk` refuses to
+  #     produce empty, because an empty filter at the daemon means "remove
+  #     everything" on a machine with somebody else's containers on it.
+  #   * no filesystem path outside this repository. The Go build cache, the
+  #     module cache and `bin/prime`'s own mktemp log are all outside the tree
+  #     and all written by the toolchain rather than by the gate.
+
+ci:
+  workflow: .github/workflows/ci.yml
+  # `bin/prime`, and every element of it has to appear in some `run:` body of
+  # the workflow or this is `gate.ci-disagrees` — a FAILURE, and the finding
+  # that means CI and the local gate have drifted into two different gates.
+  #
+  # The plain one-line spelling, deliberately, and it is already the shape
+  # caf's workflow uses at ci.yml's `the gate a developer runs` step:
+  # `run: ./bin/prime`. As of core 63fd319 the checker reads every `run:`
+  # spelling — one-liners, `- run:` sequence items, and bare `run:` with the
+  # value on the lines below — so there is no longer any reason to reach for an
+  # awkward block scalar to be visible. Nothing in this packet changes
+  # `.github/workflows/ci.yml`, and `internal/ci`'s
+  # `TestTheGateJobRunsTheGateAndTheLockfileGuard` continues to assert that the
+  # `gate` job runs this command and carries the lockfile guard beside it.
+  invokes: [bin/prime]

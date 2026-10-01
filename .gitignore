@@ -14,6 +14,13 @@ coverage.txt
 *.out
 *.test
 
+# core's gate checker writes the gate's own output here when it is run with
+# `--log-dir .log`, which is how tests/gate-declaration-self-test.sh runs its
+# first two controls: they check the real repository, not a copy, because a
+# four-file copy cannot run `go mod download`. The log is the operator's
+# evidence and is deliberately never committed.
+.log/
+
 # Local environment.
 .env
 .env.*

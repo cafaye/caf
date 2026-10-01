@@ -6,12 +6,34 @@ it to agents.
 
 **v0 is a skeleton, and the parts that are not a skeleton work.** Every
 subcommand exists and validates its arguments. `version`, `doctor`, `caf
-contract` and `dev` do real work; the rest say so, plainly, instead of
+contract`, `dev` and `deploy` do real work; the rest say so, plainly, instead of
 half-working:
 
 ```
-$ caf deploy identity --dry-run
-caf: caf deploy: not implemented in v0
+$ caf deploy --env staging --dry-run identity
+identity: deploying config/deploy.yml from ~/src/identity with kamal 2.12.0
+  credentials come from .kamal/secrets.staging, by name only
+  environment staging, so config/deploy.staging.yml is merged over config/deploy.yml
+
+this is what caf deploy would run:
+
+  kamal version
+      kamal is the deploy engine; this prints its version and fails if it is not installed
+  kamal config --destination staging
+      reads config/deploy.yml with its ERB evaluated, and refuses a config kamal cannot use
+  kamal setup --destination staging
+      installs Docker if the host lacks it, boots the accessories, builds, pushes, rolls out, and refuses a release that never goes healthy
+  kamal app containers --destination staging
+      reports which containers are actually running, which is the only answer to what a partial failure left behind
+      the last one runs only if the deploy above fails.
+
+Dry run. The two read-only steps really did run: kamal version and kamal config --destination staging read the
+configuration and change nothing. kamal setup --destination staging, which is the only step that changes a
+server, was NOT run. No container was started, no image was built or pushed,
+no file in /home/you/src/identity was written, and no secret was read.
+
+Deploy it for real with:
+  caf deploy --env staging --yes identity
 ```
 
 ## Install
@@ -41,11 +63,15 @@ tests/gate-declaration-self-test.sh         # and that the declaration can go re
 ```
 
 Two things about it that are worth knowing before you read the file.
-`bin/prime --live` additionally runs the two live tests in
-`internal/ports/live_test.go` and `internal/ryuk/live_test.go`, which need a
-container runtime and are otherwise skipped — and it refuses to report success if
-they did not run. And the declaration's `live-tier` proof exists so that a run in
-which they *were* skipped cannot read as a run in which they passed.
+`bin/prime --live` additionally runs the four live tests in
+`internal/ports/live_test.go`, `internal/ryuk/live_test.go` and
+`internal/deploy/live_test.go`, which need a container runtime and are otherwise
+skipped — and it refuses to report success if they did not run. The deploy one
+also needs `kamal` on `PATH`, and it really deploys; see
+[`REPORT-caf-21-deploy.md`](REPORT-caf-21-deploy.md) and read that file's header
+before running it on a machine that is not yours. And the declaration's
+`live-tier` proof exists so that a run in which they *were* skipped cannot read as
+a run in which they passed.
 
 ## Commands
 
@@ -54,7 +80,7 @@ which they *were* skipped cannot read as a run in which they passed.
 | `caf init` | create a `cafaye.yml` manifest for the current project | flags only |
 | `caf new <name>` | scaffold a new cafaye service or app | flags only |
 | `caf dev [project]` | run the local development stack | **works** |
-| `caf deploy <service>` | deploy a service or app to the platform | flags only |
+| `caf deploy <service>` | deploy a service or app to the platform | **works** |
 | `caf gen <target>` | generate code and config from cafaye contracts | flags only |
 | `caf contract lint <path>` | validate `cafaye.yml` against the core schema | **works** |
 | `caf contract resolve <c> <v>` | resolve a core version constraint | **works** |
@@ -356,6 +382,134 @@ repository had no TUI framework and this packet did not add one: it would be a
 dependency nobody asked for and a second rendering of the same state. `caf
 dev --dry-run` is how a plan is inspected before anything starts, which is the
 job a TUI would have had here.
+
+## `caf deploy`
+
+`caf deploy` runs a real deployment. It drives [Kamal 2](https://kamal-deploy.org),
+and it runs **one** command that changes anything:
+
+```sh
+caf deploy <service> --env <env> --yes
+```
+
+`kamal setup` — not `kamal deploy` — because `setup` is "install Docker on the
+host if it lacks it, boot the accessories, deploy", and the accessories are the
+part a first deploy needs and a bare `deploy` skips. A customer following this
+path onto a fresh VPS would otherwise get a service with no database, and the
+error would be a connection-refused from inside the application.
+
+caf does not reimplement the deploy. Build, push, proxy boot, the rolling
+rollout, the health gate and the rollback are Kamal's; a Go implementation of
+them would be a second deploy engine that can disagree with the first about what a
+deploy is, and the disagreement would be found in production. What caf owns is
+the part either side: the refusal that should happen before, and the report that
+has to be true after.
+
+### What it needs
+
+A project with `config/deploy.yml`, copied from
+[`cafaye/kit`](https://github.com/cafaye/kit)'s `templates/kamal/deploy.yml.erb`.
+The `KIT_*` variables that template interpolates are **deployment facts, not
+secrets**, so they are exported in the shell that runs the deploy and the template
+refuses to render a blank one. Credentials are **names** in `.kamal/secrets.<env>`
+(or `.kamal/secrets` with no `--env`), resolved by Kamal; no value ever appears in
+the config or in caf's output.
+
+The deploy engine is a Ruby gem, so the machine you deploy *from* needs Ruby. The
+**service image does not** — `kamal-proxy` and `kamal-secrets` are standalone
+binaries Kamal puts on the *server*. A missing kamal arrives as
+`gem install kamal` and that explanation, not as exec's "executable file not
+found".
+
+### It refuses one thing, and says why
+
+An accessory that publishes its port puts the database on every interface the host
+has. caf reads Kamal's **own resolved config** — after the ERB is evaluated — and
+refuses to deploy a config that does this:
+
+```
+$ caf deploy --env production identity
+caf deploy: refusing to deploy
+
+accessory postgres publishes port 5432 on every interface of the host, and its data is reachable from the network.
+  kamal turns `port: 5432` into `docker run --publish 5432:5432`, and Docker binds 0.0.0.0 and :: when the
+  published port names no host address. That is measured, not inferred: the boot fails with
+  "Bind for 0.0.0.0:5432 failed" on a busy port, which is the same bind.
+  Nothing needs it. The accessory is on the `kamal` network as postgres, and app containers reach it by
+  that name. The host's loopback is not a container's loopback, so binding 127.0.0.1 does not help
+  them either — it only helps a psql run on the box itself.
+  Fix it in config/deploy.yml, one of:
+    delete the `port:` line, and the database is reachable by name only   <- the right answer
+    set it to "127.0.0.1:5432:5432", which publishes to this host only, for a psql on the box
+```
+
+Exit 1, nothing deployed, and **stderr stays empty** — the refusal is the report
+and a CI log should not see it twice. `DATABASE_URL` then has to name the
+accessory's container (`<service>-<accessory>`, e.g. `identity-postgres`) rather
+than a host address, which is the one change this costs per service.
+
+Both halves of that are measured, not argued, and
+[`REPORT-caf-21-deploy.md`](REPORT-caf-21-deploy.md) §4 has the output: a boot
+with `port: 5432` fails on `Bind for 0.0.0.0:5432`, a loopback publish is
+invisible to a container on the `kamal` network, and a deployed app reaches its
+database **by name** with the accessory publishing nothing at all.
+
+### `--dry-run` is honest, and three ways
+
+It prints every command that would run — including the one that only runs *after*
+a failure — and executes the two that cannot change a server. Those two really do
+run, because the config is an ERB template only Kamal can evaluate; printing a
+plan caf had to guess at would be a template with extra steps. And:
+
+- the **filesystem** is walked before and after and compared;
+- the **argv** is recorded by a fake, and the changing step is asserted not to
+  have been executed;
+- the **refusal still fires**. A dry run on a config that publishes a port exits
+  nonzero and does not deploy — a dry run more permissive than the real one is
+  worse than no dry run.
+
+A dry run also never asks for confirmation: somebody who typed `--dry-run` to see
+what would happen gets the plan, not a question, and in a pipeline with no
+terminal, asking would hang.
+
+### A partial failure says what to do
+
+```
+$ caf deploy --env staging --yes identity
+...
+kamal setup --destination staging failed: exit status 1
+
+what is running now (kamal app containers --destination staging):
+App Host: 10.0.0.4
+CONTAINER ID   IMAGE                    STATUS                     NAMES
+9586677b96f3   ghcr.io/cafaye/identity:9f2c  Exited (1) 4 seconds ago   identity-web-9f2c1a8
+6f3ce7867e8b   ghcr.io/cafaye/identity:1a4b  Up 43 seconds               identity-web-1a4b7d
+
+what to do:
+  the database was not touched. kamal boots accessories separately from the app, so
+  this deploy moved application containers only and the database is still up.
+  a previous release is usually still serving: kamal leaves it up until a new one is healthy.
+  read the previous release's name from the list above, then: kamal rollback <version>
+  the reason kamal gave is above.
+```
+
+`kamal app containers` is a plan step, not a branch in the command, so a dry run
+prints the command a *failure* will run. Asking the server what is running is the
+only answer to that question that is not a guess. With `-version` pinned, the
+rollback line names the release instead of telling you to read it.
+
+### It has actually been run
+
+A real deployment, to a real Docker daemon reached over real SSH, with a real
+`kamal-proxy` gating traffic on a real healthcheck, and a secret from
+`.kamal/secrets` arriving in the serving container. It is
+`internal/deploy/live_test.go`, it is in the **live** tier rather than the gate
+(it needs `kamal` and a container runtime), and
+[`REPORT-caf-21-deploy.md`](REPORT-caf-21-deploy.md) has the output — including
+the release that never goes healthy being refused while the previous one keeps
+serving. **Read that file's header before running it on a machine that is not
+yours**: it starts an SSH daemon, publishes a port, and uses the global container
+name `kamal-docker-registry` that Kamal itself owns.
 
 ## `caf doctor`
 
@@ -665,6 +819,7 @@ when caf cannot read what you typed.
 cmd/caf/main.go     thin entrypoint: process in, exit code out
 internal/cli/       the router, the registry, one file per subcommand
 internal/contract/  manifest loading, schema validation, version resolution
+internal/deploy/    the deploy: the pure plan, the exposure refusal, the one seam
 internal/dev/       the local stack: planning, rendering, the two seams
 internal/mcp/       the MCP server: transports, the served table, the seam
 internal/ledger/    the reclamation ledger: what caf created, so cleanup is not memory
@@ -699,6 +854,19 @@ library cannot do:
 
 There is no CLI framework: routing is hand-rolled on the standard `flag`
 package.
+
+`internal/deploy` is `internal/dev`'s shape with a different payload. `PlanFor` is
+a pure function from a project and some options to an ordered list of steps, each
+with its exact argv and the reason it is there; everything that touches the world
+is behind `Runner`, which is **one method** — run one Kamal subcommand — because
+every step of a deploy is a Kamal command and a seam exists to be the smallest
+thing that cannot be faked. It runs exactly one command that changes a server,
+`kamal setup`, and owns the refusal before it and the report after it. The one
+thing worth reading before changing it is
+`internal/deploy/exposure.go`'s comment on the *shape* of `kamal config`'s output:
+the top level is symbol keys and the accessory blocks are plain strings, and a
+check written against the wrong one reports every database in the fleet as safely
+unpublished.
 
 The four packages above `internal/dev` are the reclamation half, and they are
 separate for one reason: the decisions — what was created, which port belongs to
@@ -804,7 +972,8 @@ Phase 0 (v0, now):
 - [ ] `caf dev` — tilt, and a TUI (see [AGENTS.md](AGENTS.md); both are a later packet)
 - [ ] `caf gen` — generate SDKs from contracts
 - [ ] `caf contract fetch` — pull a contract from a registry
-- [ ] `caf deploy` — push to the platform
+- [x] `caf deploy` — a real Kamal 2 deploy, health-gated, with a refusal for a
+      published accessory port and an honest `--dry-run`
 - [x] `caf mcp` — serve the cafaye tools to agents
 - [x] `caf reclaim` — the reclamation ledger, containers before volumes, tri-state
 - [x] `caf env up` — the only provisioning verb: reserve, run as the parent, reclaim

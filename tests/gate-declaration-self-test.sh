@@ -179,6 +179,23 @@ suite_floor() {
     "$ROOT/gate.yml" | head -1
 }
 
+# packages_floor is the `packages` proof's own minimum, read for the reason
+# suite_floor is: the stand-in used to print a literal `10`, which went stale the
+# same way the suite floor did when caf-21 added `internal/deploy`, and the
+# stand-in control went red naming gate.floor.
+packages_floor() {
+  sed -n '/^    - id: packages$/,/^    - id: /{s/^      minimum: \([0-9][0-9]*\)$/\1/p;}' \
+    "$ROOT/gate.yml" | head -1
+}
+
+# subtests_floor is the `subtests` proof's minimum, and the stand-in's hardcoded
+# 537 is stale for the same reason. Read here so the stand-in is green by
+# construction against whatever the declaration currently claims.
+subtests_floor() {
+  sed -n '/^    - id: subtests$/,/^    - id: /{s/^      minimum: \([0-9][0-9]*\)$/\1/p;}' \
+    "$ROOT/gate.yml" | head -1
+}
+
 install_standin() {
   local dir="$1" passes="${2:-}"
   if [ -z "$passes" ]; then
@@ -191,6 +208,32 @@ install_standin() {
       return 1
     fi
   fi
+  local packages subtests
+  packages="$(packages_floor)"
+  subtests="$(subtests_floor)"
+  if [ -z "$packages" ] || [ -z "$subtests" ]; then
+    echo "gate-declaration-self-test: no packages or subtests floor found in $ROOT/gate.yml." >&2
+    echo "  If the proofs' shape changed, fix packages_floor and subtests_floor — do not" >&2
+    echo "  put the numbers back in this file, which is how they went stale." >&2
+    failures=$((failures + 1))
+    return 1
+  fi
+  # The live tier's SIZE is read out of gate.yml for the same reason the suite
+  # floor is, and it went stale the same way: the literal `2` below survived
+  # caf-21, which added two live deploy tests, and the `live-tier` proof stopped
+  # matching — so the stand-in control went red naming a proof that gate.yml
+  # still declares. `internal/ci`'s TestTheGateAccountsForEveryLiveTest keeps
+  # bin/prime and the tree in agreement; this keeps the stand-in and gate.yml in
+  # agreement, which is the other half and was not checked at all.
+  local tier
+  tier="$(live_tier_size)"
+  if [ -z "$tier" ]; then
+    echo "gate-declaration-self-test: no live tier size found in $ROOT/gate.yml." >&2
+    echo "  If the proof's shape changed, fix live_tier_size — do not put the" >&2
+    echo "  number back in this file." >&2
+    failures=$((failures + 1))
+    return 1
+  fi
   write "$dir/bin/prime" <<STUB
 #!/usr/bin/env bash
 # A stand-in for bin/prime, written by tests/gate-declaration-self-test.sh.
@@ -199,10 +242,20 @@ install_standin() {
 # the real gate works: the first control runs the real bin/prime.
 set -euo pipefail
 echo "ok  \tgithub.com/cafaye/caf/internal/example\t0.001s"
-echo 'caf: 10 packages, ${passes} top-level passes, 537 subtest passes, 0 failures, 3 skips'
-echo 'caf: live tier: 0 of 2 executed; not enabled, so the two live tests skipped rather than ran. Set CAF_LIVE_DOCKER=1 and CAF_LIVE_RYUK=1, or run bin/prime --live'
+echo 'caf: ${packages} packages, ${passes} top-level passes, ${subtests} subtest passes, 0 failures, 3 skips'
+echo 'caf: live tier: 0 of ${tier} executed; not enabled, so the live tests skipped rather than ran. Set CAF_LIVE_DOCKER=1, CAF_LIVE_RYUK=1 and CAF_LIVE_KAMAL=1, or run bin/prime --live'
 STUB
   chmod +x "$dir/bin/prime"
+}
+
+# live_tier_size is the number in gate.yml's `live-tier` proof pattern, read the
+# same way suite_floor reads the suite floor. It is written as "of N executed" and
+# the N is the tier's size, which is also the `2` bin/prime writes into its own
+# line — so the two have to be one number and neither of them may be written down
+# here.
+live_tier_size() {
+  sed -n '/^    - id: live-tier$/,$ {s/^      match: .*of \([0-9][0-9]*\) executed.*$/\1/p;}' \
+    "$ROOT/gate.yml" | head -1
 }
 
 # check <dir> [args...] — run the checker, capture output and exit code.
@@ -669,7 +722,7 @@ else
       printf 'FAIL gate-declaration-self-test: bin/prime --live exited 0 with no container runtime on PATH.\n%s\n' \
         "$live_out" >&2
       failures=$((failures + 1))
-    elif ! printf '%s' "$live_out" | grep -qF 'the live tier ran 0 of 2 tests'; then
+    elif ! printf '%s' "$live_out" | grep -qF "the live tier ran 0 of $(live_tier_size) tests"; then
       printf 'FAIL gate-declaration-self-test: bin/prime --live went nonzero but never said the live tier did not run\n%s\n' \
         "$live_out" >&2
       failures=$((failures + 1))

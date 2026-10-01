@@ -418,11 +418,18 @@ type declaration struct {
 // expectedSkips is how many top-level tests the declared gate expects NOT to
 // run, and it is the entire margin the ratchet allows.
 //
-// The three, all measured on this tree, all accounted for in `bin/prime`'s own
+// The five, all measured on this tree, all accounted for in `bin/prime`'s own
 // accounting section, and all structural rather than machine-dependent:
 //
 //	TestTheSilentCollisionIsReal             live tier, gated on CAF_LIVE_DOCKER
 //	TestAClosedLeaseReapsAndAnOpenOneDoesNot  live tier, gated on CAF_LIVE_RYUK
+//	TestADeployReachesAServerAndAnswers        live tier, gated on CAF_LIVE_KAMAL;
+//	                                        deploys to a container over SSH on
+//	                                        the local Docker daemon and reads
+//	                                        back what answered
+//	TestADeployRefusesAReleaseThatNeverGoesHealthy  same tier; the health gate
+//	                                        refuses a release and the last good
+//	                                        one keeps serving
 //	TestHolderChildReservesAndExits           re-exec'd by its parent; in the
 //	                                        parent run it skips with "not the
 //	                                        child run" and passes inside the
@@ -440,10 +447,10 @@ type declaration struct {
 // A test that cannot go red is not a test, and this one had never been observed
 // red.
 //
-// The three above are not machine-capability skips. They skip in every run of
+// The five above are not machine-capability skips. They skip in every run of
 // the declared gate, on every machine, by construction. That is the
 // distinction this constant draws.
-const expectedSkips = 3
+const expectedSkips = 5
 
 // suiteProofID is the proof whose `minimum` is the suite's floor. Named in one
 // place so renaming it in gate.yml is a one-line change here that fails loudly,

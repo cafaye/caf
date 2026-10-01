@@ -2,7 +2,7 @@
 # The gate for caf. Download, build, test, and then say what it did.
 #
 #   bin/prime            the fast gate. The live tier skips, loudly, and is counted.
-#   bin/prime --live     the fast gate plus the two live tests, which need a container
+#   bin/prime --live     the fast gate plus the four live tests, which need a container
 #                        runtime. Exits nonzero unless both of them actually ran.
 #
 # NOT kit's Go template, and not claimed to be. It was, until caf-07, down to a
@@ -54,7 +54,7 @@ usage: bin/prime [--live]
 
   (no flags)  go mod download, go build ./..., go test ./...
   --live      the same, with CAF_LIVE_DOCKER=1 and CAF_LIVE_RYUK=1 set, so the
-              two live tests run instead of skipping. Needs a container runtime,
+              four live tests run instead of skipping. Needs a container runtime,
               and is asserted: if the live tier did not run, this exits nonzero.
 USAGE
 }
@@ -70,14 +70,22 @@ USAGE
 # be a gate that runs on a GitHub-hosted runner. The ryuk one is portable in
 # principle and is currently RED on this machine -- see
 # REPORT-caf-07-gate.md. That is a reason to report it loudly, not a reason to
-# leave it out of the count.
-LIVE_TESTS='TestTheSilentCollisionIsReal|TestAClosedLeaseReapsAndAnOpenOneDoesNot'
+# leave it out of the count. The deploy one is the third: it builds an image,
+# pushes it, rolls it out behind kamal-proxy on a local Docker daemon reached
+# over SSH, and reads back what answered. It needs a container runtime and a
+# kamal, so it belongs here rather than in the declared gate -- and its reason is
+# that it is the only test in this repository that proves a deploy happened
+# rather than that a deploy was described. Its second half is a separate test
+# because it is a separate claim: that a release which never goes healthy is
+# refused AND the release already serving keeps serving. Zero downtime is the
+# thing being bought, and it is worth its own name in the count.
+LIVE_TESTS='TestTheSilentCollisionIsReal|TestAClosedLeaseReapsAndAnOpenOneDoesNot|TestADeployReachesAServerAndAnswers|TestADeployRefusesAReleaseThatNeverGoesHealthy'
 
 # The size of the tier, written down rather than computed, because it is the
 # number `gate.yml`'s `live-tier` proof matches and because a count derived
 # from the same text it is checked against would prove nothing. internal/ci
 # asserts it against the tree.
-LIVE_TIER=2
+LIVE_TIER=4
 
 live=0
 while [ "$#" -gt 0 ]; do
@@ -101,7 +109,8 @@ done
 if [ "$live" -eq 1 ]; then
   CAF_LIVE_DOCKER=1
   CAF_LIVE_RYUK=1
-  export CAF_LIVE_DOCKER CAF_LIVE_RYUK
+  CAF_LIVE_KAMAL=1
+  export CAF_LIVE_DOCKER CAF_LIVE_RYUK CAF_LIVE_KAMAL
 fi
 
 # ---------------------------------------------------------------------------
@@ -167,7 +176,11 @@ case "$live_pass" in
     if [ "$live" -eq 1 ]; then
       printf 'caf: live tier: 0 of %s executed; --live asked for it and it did not run, which means no container runtime answered on PATH\n' "$LIVE_TIER"
     else
-      printf 'caf: live tier: 0 of %s executed; not enabled, so the two live tests skipped rather than ran. Set CAF_LIVE_DOCKER=1 and CAF_LIVE_RYUK=1, or run bin/prime --live\n' "$LIVE_TIER"
+      # The flag names are not hardcoded here either: the same list that counted
+      # the tier is what a reader needs to set, and two copies of it is one
+      # place to forget to update.
+      printf 'caf: live tier: 0 of %s executed; not enabled, so the %s live tests skipped rather than ran.\n' "$LIVE_TIER" "$LIVE_TIER"
+      printf 'caf: live tier: set CAF_LIVE_DOCKER=1, CAF_LIVE_RYUK=1 and CAF_LIVE_KAMAL=1, or run bin/prime --live\n'
     fi
     ;;
   *)

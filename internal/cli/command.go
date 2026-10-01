@@ -67,7 +67,7 @@ func (c *Command) Execute(env *Env, args []string) error {
 func Commands() []*Command {
 	return []*Command{
 		newContractCommand(),
-		newDeployCommand(),
+		newDeployCommand(deployDeps{}),
 		newDevCommand(defaultDevDeps()),
 		newDoctorCommand(),
 		newEnvCommand(),

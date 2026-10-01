@@ -99,7 +99,13 @@ gate:
       # would move by whatever was in the package that went missing. This one
       # does not move at all, so the three together cannot be satisfied by a
       # subset.
-      minimum: 10
+      #
+      # 11, which is 10 plus `internal/deploy`. That package is the one carrying
+      # `caf deploy` and its live tier, so this floor is what makes the floor
+      # below move when deploy is tested at all: a deploy that shipped with no
+      # tests would leave the suite floor untouched and this one alone would
+      # notice the package appearing with nothing in it.
+      minimum: 11
     - id: suite
       match: '^caf: [0-9]+ packages, ([0-9]+) top-level passes, [0-9]+ subtest passes, 0 failures, [0-9]+ skips$'
       # 435, measured, and the number is the interesting part of this file.
@@ -160,7 +166,15 @@ gate:
       # not go red. `TestTheGateFloorIsNotBelowTheSuiteCafClaimsToHave` is the
       # exact version, and it was watched going red on this very floor before
       # this number was corrected.
-      minimum: 435
+      #
+      # caf-21 added 72 top-level tests, in `internal/deploy` and
+      # `internal/cli`, and moved this floor from 435 to 506. The arithmetic is
+      # `declared - minimum == expectedSkips` and it is exact in both directions:
+      # 511 declared, 5 skips, so 506 run. The skips grew from 3 to 5 because the
+      # live deploy tier added two env-gated tests, and `expectedSkips` in
+      # `internal/ci/prime_test.go` is what says so — a new live test without
+      # that number moving fails this test rather than quietly widening the gate.
+      minimum: 506
     - id: subtests
       match: '^caf: [0-9]+ packages, [0-9]+ top-level passes, ([0-9]+) subtest passes, 0 failures, [0-9]+ skips$'
       # 537, measured, and it is a different detector from the one above.
@@ -169,32 +183,40 @@ gate:
       # floor's total and loses this one's, and only this floor notices. One
       # number that counted everything would be satisfied by that refactor
       # silently; two numbers that count different things are not.
-      minimum: 537
+      #
+      # 558, which is 537 plus the 21 subtests caf-21's deploy tables added. The
+      # suite floor above cannot see the difference between a new test and a new
+      # `t.Run` inside an existing one; this floor can, and it is the reason
+      # caf-21's tables are tables rather than a sequence of asserts.
+      minimum: 558
     #
     # THE ONE WITH NO FLOOR, and the schema sanctions that: a `minimum` is
     # omitted "for a proof that reports nothing countable (a step that must
     # appear in the log, a tier that must not say it skipped)". This is the
     # second kind, and it is the load-bearing proof of the four.
     #
-    # `bin/prime` prints, on every run in every mode, how many of the two live
+    # `bin/prime` prints, on every run in every mode, how many of the four live
     # tests actually ran. So the fast gate is a run in which the container tier
     # did not execute and the gate's own output says so, in a line the
     # declaration matches. Delete that line from `bin/prime`, or move it, or
     # rename it, and this proof never appears: `gate.proof-missing`, a FAILURE.
     # A skip that a declaration requires to be *stated* cannot be a silent pass.
     #
-    # The literal `2` in the pattern is the ratchet, and it is a triple ratchet
-    # kept honest by `internal/ci`: it is the size `bin/prime` writes in
-    # `LIVE_TIER`, the length of the `LIVE_TESTS` list beside it, and the size
-    # in this pattern, and `TestTheGateAccountsForEveryLiveTest` fails if those
-    # three and the tree's env-gated tests stop being the same set. A third live
-    # test added anywhere in this repository therefore turns this proof red
-    # until somebody updates all four places on purpose. That is the failure
-    # mode being bought: a demonstration that appears and is invisible to the
-    # declaration forever.
+    # The literal `4` in the pattern is the ratchet, and it is a quadruple
+    # ratchet kept honest by `internal/ci`: it is the size `bin/prime` writes in
+    # `LIVE_TIER`, the length of the `LIVE_TESTS` list beside it, the size in
+    # this pattern, and the size
+    # `tests/gate-declaration-self-test.sh` reads out of this pattern for its
+    # stand-in gate. `TestTheGateAccountsForEveryLiveTest` fails if the first
+    # three and the tree's env-gated tests stop being the same set, and the
+    # self-test fails if the fourth goes stale — which it did, once: caf-21 added
+    # the two deploy live tests and the stand-in still printed "0 of 2", so the
+    # stand-in control went red naming a proof this file still declared. Both
+    # halves of that are now derived rather than written down. A fifth live test
+    # added anywhere in this repository therefore turns something red on purpose.
     #
     # WHY THERE IS NO `minimum` ON IT, which is a decision and not an
-    # oversight. A floor of 2 would be the honest reading of "the live tier
+    # oversight. A floor of 4 would be the honest reading of "the live tier
     # must not be satisfiable by a run where it never executed" — and it would
     # make the declared gate red on every machine without a container runtime,
     # including a bare GitHub runner, for the whole of the ordinary suite. The
@@ -223,8 +245,21 @@ gate:
     # The second is red here, now, on the machine caf-06's own report says it
     # was verified on. It is a finding, not a reason to shrink the tier, and it
     # is not fixed by this packet: see REPORT-caf-07-gate.md.
+    #
+    # THE TWO DEPLOY LIVE TESTS, added by caf-21, and why they are in the tier.
+    #
+    #   CAF_LIVE_KAMAL=1 go test -run 'TestADeploy' -v ./internal/deploy/
+    #     -> both PASS, on this machine
+    #
+    # They build an SSH host, boot Kamal's own registry, and run a real rolling
+    # rollout against a real kamal-proxy, then read back what answered over the
+    # proxy. They are demonstrations rather than checks for the reason the first
+    # two are: they need `kamal` and a container runtime, and they take minutes.
+    # What they are not is hypothetical — a deploy engine that stopped deploying
+    # would leave every other test in this repository green, because every other
+    # test asserts on argv. The one that answers "does it actually work" is here.
     - id: live-tier
-      match: '^caf: live tier: [0-9]+ of 2 executed'
+      match: '^caf: live tier: [0-9]+ of 4 executed'
 
 external:
   # NOT self-contained, and saying so is the point. `bin/prime` needs a Go
@@ -301,7 +336,7 @@ external:
       # kind of lie: this requirement is conditional, and the three above are
       # not.
       name: >-
-        a container runtime, for `bin/prime --live` ONLY — the two live tests
+        a container runtime, for `bin/prime --live` ONLY — the four live tests
         that the declared gate skips. Not needed by `bin/prime` itself.
       satisfy:
         # A bare name, so it warns rather than failing. `docker version` rather

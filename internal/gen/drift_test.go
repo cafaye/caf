@@ -13,68 +13,62 @@ import (
 
 // THE DRIFT GATE.
 //
-// One test, and it is the check this package exists for: the golden under
-// `internal/gen/testdata/` is what `caf gen telemetry` wrote when the contract
-// was last read, and this regenerates it from the vendored core schemas and
-// compares the bytes.
+// One test, and it is the check this package exists for: the committed copy of
+// what `caf gen telemetry` writes is regenerated from the vendored core schemas
+// and compared byte for byte.
 //
-// Where it runs is not an accident. It is an ordinary `go test` in this
-// package, so `bin/prime` runs it, and `.github/workflows/ci.yml` runs
-// `bin/prime` — which is the only place a gate belongs in this repository, and
-// the same shape `gate.yml` already declares for the three floors it reads out
-// of `bin/prime`'s own output. A drift gate in a script under a directory nobody
-// runs is a demonstration that rots, which is the reason `AGENTS.md` keeps the
-// live tests in the tree as `go test` code rather than moving them to `scripts/`.
+// WHERE THE COMMITTED COPY LIVES, and why it is the repository root rather than a
+// golden under `internal/gen/testdata/`, is the single most important decision in
+// this file.
 //
-// What it catches, and what it does not:
+// caf runs its own generator on its own manifest, so `internal/telemetry/` and
+// `telemetry/otel-endpoint.json` are committed copies of the generator's output
+// that are part of this module. That means:
 //
-//   - It catches core moving. Refresh the vendored schemas — which is a refresh
-//     procedure with a core commit attached, not a patch — and every value core
-//     changed lands in the emitted bytes, so this goes red and names the file.
-//     That is the whole mechanism: the generator reads core rather than
-//     transcribing it, so there is no copy to keep in step.
+//   - `go build ./...` compiles the generated Go. `go vet ./...` vets it.
+//     `gofmt -l .` requires it to be gofmt-clean. So a generator bug that emits
+//     Go which does not compile is a red gate rather than a file somebody finds
+//     out about when they run it.
 //
-//   - It catches caf's generator moving without its golden moving, which is the
-//     other direction and the one a reviewer would otherwise catch by reading a
-//     diff and wondering.
+//   - `go test ./...` RUNS the generated suite — twelve top-level tests and their
+//     rows, written by the generator from the same contract tables as the setup
+//     they test. That suite is the standing check that the emitted setup still
+//     honours what core says, and it keeps working after nobody has run
+//     `caf gen` for a year.
 //
-//   - It does NOT catch a hand edit to a generated file in a tree that does not
-//     keep a golden. In caf's own tree it does, because this test compares
-//     against `internal/gen/testdata/`; in an adopting service the generated
-//     `telemetry_test.go` is the standing check, and that file is generated for
-//     exactly that reason.
+// The first version of this gate kept the golden in `testdata/`, which is the
+// conventional place, and it was wrong for exactly one reason: `testdata` is
+// excluded from every package by the go toolchain, so twelve generated tests sat
+// in the tree declared and never run. `internal/ci`'s test walker counted them
+// anyway and the gate floor was twelve out — which is recorded at `notASourceTree`
+// and in `gate.yml`'s suite proof, because a gate that drifts is the thing this
+// whole repository is about.
 //
-// `-update` rewrites the golden. It is behind a flag rather than done by hand
-// because the failure this is written for is the one where somebody runs
-// `-update` first and reads the core changelog afterwards.
+// A second copy under `testdata/` would have fixed the count and kept the defect:
+// the files would still not compile and the suite would still not run. There is
+// one copy, in the tree, and the gate points at it.
+//
+// `-update` rewrites the committed files. It is behind a flag rather than done by
+// hand because the failure this is written for is the one where somebody runs
+// `-update` first and reads core's changelog afterwards.
 
-// updateGolden is `-update`, and it is the only way the golden changes.
+// updateGolden is `-update`, and it is the only way the committed copy changes.
 var updateGolden = flag.Bool("update", false,
-	"rewrite internal/gen/testdata/ from the vendored core contract. Read the diff this test prints first: "+
-		"regenerating before reading it is how a breaking core bump becomes an invisible one.")
-
-// goldenDir is where the goldens live, relative to this package.
-const goldenDir = "testdata"
-
-// goldenNames are the generated paths, in the order the report prints them.
-//
-// It is derived from one run rather than written down, because a written-down
-// list is a second thing to keep in step with the generator and this file is
-// about not having those.
-func goldenNames(t *testing.T) []string {
-	t.Helper()
-
-	out := generate(t, manifestFor)
-	return out.Paths()
-}
+	"rewrite the committed telemetry files from the vendored core contract. Read the diff this test prints "+
+		"first: regenerating before reading it is how a breaking core bump becomes an invisible one.")
 
 // TestTheGeneratedTelemetryHasNotDrifted is the gate.
+//
+// The root is two directories up, because the committed files are at the
+// repository root and this package is `internal/gen`. A relative path that had to
+// agree with the test's own location would be one more thing to keep in step.
 func TestTheGeneratedTelemetryHasNotDrifted(t *testing.T) {
 	out := generate(t, manifestFor)
+	root := filepath.Join("..", "..")
 
 	if *updateGolden {
 		for _, file := range out.Files {
-			path := filepath.Join(goldenDir, filepath.FromSlash(file.Path))
+			path := filepath.Join(root, filepath.FromSlash(file.Path))
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 				t.Fatalf("create %s: %v", filepath.Dir(path), err)
 			}
@@ -88,26 +82,26 @@ func TestTheGeneratedTelemetryHasNotDrifted(t *testing.T) {
 
 	for _, file := range out.Files {
 		t.Run(file.Path, func(t *testing.T) {
-			path := filepath.Join(goldenDir, filepath.FromSlash(file.Path))
+			path := filepath.Join(root, filepath.FromSlash(file.Path))
 			want, err := os.ReadFile(path)
 			if err != nil {
-				t.Fatalf("read the golden %s: %v\n"+
-					"The golden is what caf gen telemetry wrote when the vendored contract was last read, and "+
-					"without it this gate has nothing to compare against.\n"+
-					"  To create it for the first time, or after a core refresh you have read the changelog for, "+
-					"run:\n    go test ./internal/gen/ -run TestTheGeneratedTelemetryHasNotDrifted -update",
+				t.Fatalf("read the committed copy %s: %v\n"+
+					"  It is a checked-in copy of what caf gen telemetry writes, and without it this gate has "+
+					"nothing to compare against.\n"+
+					"  To create it for the first time, or after a core refresh you have read the changelog "+
+					"for, run:\n    go test ./internal/gen/ -run TestTheGeneratedTelemetryHasNotDrifted -update",
 					path, err)
 			}
 			if bytes.Equal(want, file.Content) {
 				return
 			}
-			reportDrift(t, path, want, file.Content)
+			reportDrift(t, file.Path, want, file.Content)
 		})
 	}
 }
 
-// driftMessage is the prose this gate prints when a golden and a regenerated
-// file disagree.
+// driftMessage is the prose this gate prints when the committed copy and a
+// regenerated one disagree.
 //
 // It is a function and not inline in the t.Errorf because it is the part of this
 // gate a test can check. The two causes below look identical from inside the
@@ -120,9 +114,9 @@ func driftMessage(path, difference string) string {
 		"      with a core commit attached, and it is legitimate. Read core's CHANGELOG\n" +
 		"      at the new commit, confirm the change is one caf can adopt, and only then\n" +
 		"      run: go test ./internal/gen/ -run TestTheGeneratedTelemetryHasNotDrifted -update\n" +
-		"    * caf's generator moved without this golden moving. That is the other half of\n" +
-		"      the gate, and it is the one a reviewer would otherwise catch by reading a\n" +
-		"      diff and wondering.\n" +
+		"    * caf's generator moved without this file being regenerated. That is the\n" +
+		"      other half of the gate, and it is the one a reviewer would otherwise\n" +
+		"      catch by reading a diff and wondering.\n" +
 		"  First difference: " + difference
 }
 
@@ -152,8 +146,8 @@ func firstDifference(want, got []byte) string {
 		}
 		if golden != emitted {
 			return "line " + itoa(i+1) + "\n" +
-				"      golden:  " + golden + "\n" +
-				"      emitted: " + emitted
+				"      committed: " + golden + "\n" +
+				"      emitted:   " + emitted
 		}
 	}
 	return "none — the files have the same lines"
@@ -197,48 +191,10 @@ func itoa(n int) string {
 	return string(digits)
 }
 
-// The golden is only worth something if the generator actually produces all three
-// files, so this asserts the golden set matches what a run emits rather than
-// trusting that a missing golden is caught by the read failure above.
-//
-// It is a separate test because the failure it reports is different: a golden
-// directory with a stale fourth file in it is a different problem from a missing
-// one, and only one of the two is what the drift test can see.
-func TestTheGoldenHoldsExactlyTheFilesAGenerates(t *testing.T) {
-	for _, path := range goldenNames(t) {
-		if _, err := os.Stat(filepath.Join(goldenDir, filepath.FromSlash(path))); err != nil {
-			t.Errorf("the golden for %s is not there: %v", path, err)
-		}
-	}
-}
-
-// The golden has to have been produced by a caf that read the contract, not typed
-// by a person — so the golden carries the same provenance header the emitter
-// writes, and this is what says so.
-//
-// Without this, a golden hand-written to make the gate green is indistinguishable
-// from one that was generated, and the gate would then be a check that a person
-// agrees with themselves.
-func TestTheGoldenCarriesTheProvenanceAHandWrittenOneWouldNot(t *testing.T) {
-	for _, path := range goldenNames(t) {
-		if strings.HasSuffix(path, ".json") {
-			continue
-		}
-		body, err := os.ReadFile(filepath.Join(goldenDir, filepath.FromSlash(path)))
-		if err != nil {
-			t.Errorf("read the golden for %s: %v", path, err)
-			continue
-		}
-		if !bytes.Contains(body, []byte("Code generated by")) {
-			t.Errorf("the golden for %s has no generated-by header, so it is not what the emitter writes", path)
-		}
-	}
-}
-
-// A golden that drifts is the point of this file, so the drift reporter itself is
-// tested. A report that says "something changed" and stops is a gate a person has
-// to read two files to act on, which is a gate that gets skipped — and a report
-// that names only one of the two causes sends them down the wrong one.
+// A committed copy that drifts is the point of this file, so the drift reporter
+// itself is tested. A report that says "something changed" and stops is a gate a
+// person has to read two files to act on, which is a gate that gets skipped — and
+// a report that names only one of the two causes sends them down the wrong one.
 func TestTheDriftReportNamesBothCausesAndTheFirstDifference(t *testing.T) {
 	difference := firstDifference(
 		[]byte("one\ntwo\nthree\n"),
@@ -273,21 +229,21 @@ func TestTheDriftReportNamesBothCausesAndTheFirstDifference(t *testing.T) {
 func TestTheDriftReportSurvivesAFileThatChangedLength(t *testing.T) {
 	for _, row := range []struct {
 		name       string
-		golden     string
+		committed  string
 		emitted    string
 		wantLine   string
 		wantAbsent bool
 	}{
-		{name: "the emitted file is shorter", golden: "one\ntwo\nthree\n", emitted: "one\n", wantLine: "line 2"},
-		{name: "the emitted file is longer", golden: "one\n", emitted: "one\ntwo\n", wantLine: "line 2"},
-		{name: "the golden is empty", golden: "", emitted: "one\n", wantLine: "line 1"},
+		{name: "the emitted file is shorter", committed: "one\ntwo\nthree\n", emitted: "one\n", wantLine: "line 2"},
+		{name: "the emitted file is longer", committed: "one\n", emitted: "one\ntwo\n", wantLine: "line 2"},
+		{name: "the committed copy is empty", committed: "", emitted: "one\n", wantLine: "line 1"},
 		{
-			name: "the emitted file ran out entirely", golden: "one\ntwo\n", emitted: "",
+			name: "the emitted file ran out entirely", committed: "one\ntwo\n", emitted: "",
 			wantLine: "line 1", wantAbsent: true,
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			got := firstDifference([]byte(row.golden), []byte(row.emitted))
+			got := firstDifference([]byte(row.committed), []byte(row.emitted))
 			if !strings.Contains(got, row.wantLine) {
 				t.Errorf("does not name %q:\n%s", row.wantLine, got)
 			}
@@ -298,10 +254,47 @@ func TestTheDriftReportSurvivesAFileThatChangedLength(t *testing.T) {
 	}
 }
 
-// The contract tables the generator reads are the ones the emitted file asserts
-// against, and this is the link between the two packages: it names core's schema
-// stem per signal so a rename in `internal/contract` is caught here rather than
-// as an empty allowlist in a generated file nobody looks at.
+// The committed copy has to have been produced by a caf that read the contract,
+// not typed by a person — so it carries the same provenance header the emitter
+// writes, and this is what says so.
+//
+// Without this, a committed copy hand-written to make the gate green is
+// indistinguishable from one that was generated, and the gate would then be a
+// check that a person agrees with themselves.
+func TestTheCommittedCopyCarriesTheProvenanceAHandWrittenOneWouldNot(t *testing.T) {
+	for _, path := range generatedNames(t) {
+		if strings.HasSuffix(path, ".json") {
+			// JSON has no comment syntax. This one's provenance is the sibling Go
+			// file, which names it as the verifier's subject.
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join("..", "..", filepath.FromSlash(path)))
+		if err != nil {
+			t.Errorf("read the committed copy of %s: %v", path, err)
+			continue
+		}
+		if !bytes.Contains(body, []byte("Code generated by")) {
+			t.Errorf("the committed copy of %s has no generated-by header, so it is not what the emitter "+
+				"writes", path)
+		}
+	}
+}
+
+// generatedNames are the paths a run emits, in the order the report prints them.
+//
+// Derived from one run rather than written down, because a written-down list is a
+// second thing to keep in step with the generator and this file is about not
+// having those.
+func generatedNames(t *testing.T) []string {
+	t.Helper()
+
+	out := generate(t, manifestFor)
+	return out.Paths()
+}
+
+// Every signal has a vendored schema to validate against, so a rename in
+// `internal/contract` is caught here rather than as an empty allowlist in a
+// generated file nobody looks at.
 func TestEverySignalHasAVendoredSchemaToValidateAgainst(t *testing.T) {
 	for _, stem := range []string{"traces", "metrics", "logs", "otel-endpoint", "redaction"} {
 		t.Run(stem, func(t *testing.T) {

@@ -117,7 +117,17 @@ gate:
       # allowlists instead of reading them out of core's schemas would have moved
       # the two test-count floors below and this one not at all, and this line is
       # what makes that visible.
-      minimum: 13
+      #
+      # 14, which is 13 plus `internal/telemetry` — and that one is the argument
+      # for the whole line. `internal/telemetry` is caf's own committed copy of
+      # what `caf gen telemetry` writes, so `go build`, `go vet`, `gofmt -l` and
+      # `go test` all reach the generated Go and its twelve-test suite. It is the
+      # only floor here that moves for code NOBODY WROTE: a generator whose output
+      # nothing compiles is a demonstration that rots, and the two floors below
+      # count tests in files a generator emitted. Without this line, an emitted Go
+      # file that did not compile would still have moved the suite floor — by a
+      # number — and nobody would have been sent to the file.
+      minimum: 14
     - id: suite
       match: '^caf: [0-9]+ packages, ([0-9]+) top-level passes, [0-9]+ subtest passes, 0 failures, [0-9]+ skips$'
       # 435, measured, and the number is the interesting part of this file.
@@ -274,7 +284,17 @@ gate:
       # measurements would be arithmetic, not a measurement, so the number below
       # was re-measured on the merged tree with bin/prime. Both rationales are
       # kept because both describe real tests that are still in the tree.
-      minimum: 676
+      #
+      # 687, which is 676 plus the eleven top-level tests inside
+      # `internal/telemetry/telemetry_test.go` — eleven that were ALREADY in the
+      # tree, declared, counted by this file's own walker, and never run by
+      # anything. `testdata` is excluded from every package by the go toolchain,
+      # so a generator whose golden lived there produced twelve tests that no
+      # `go test` on any machine would ever execute. They moved to a real package
+      # and now run. `expectedSkips` stays at 8 for the same reason every packet
+      # since caf-29 gives: none of the eleven is env-gated, so no new test
+      # arrived as a new tier.
+      minimum: 687
     - id: subtests
       match: '^caf: [0-9]+ packages, [0-9]+ top-level passes, ([0-9]+) subtest passes, 0 failures, [0-9]+ skips$'
       # 537, measured, and it is a different detector from the one above.
@@ -332,7 +352,14 @@ gate:
       # the telemetry allowlist table (`internal/contract/telemetry_test.go`), and
       # both are rows rather than functions — which is exactly the case this floor
       # exists for, and why it moved 70 while the suite floor moved 32.
-      minimum: 830
+      #
+      # 862, which is 831 plus the thirty-one rows inside the generated
+      # `internal/telemetry/telemetry_test.go`. Every one of them is a table row
+      # written by `caf gen telemetry` from the same contract tables as the setup
+      # it tests — which is the argument for generating the tests and not just the
+      # setup, and the reason this floor moved further than the suite floor did.
+      # The measurement is 862 and the floor is one lower, for the reason above.
+      minimum: 861
     #
     # THE ONE WITH NO FLOOR, and the schema sanctions that: a `minimum` is
     # omitted "for a proof that reports nothing countable (a step that must

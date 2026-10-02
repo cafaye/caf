@@ -83,7 +83,8 @@ a run in which they passed.
 | `caf deploy <service>` | deploy a service or app to the platform | **works** |
 | `caf backup <service>` | take one real backup and prove it restores, into a scratch database it then drops | **works** |
 | `caf gen <target>` | generate code and config from cafaye contracts | flags only |
-| `caf contract lint <path>` | validate `cafaye.yml` against the core schema | **works** |
+| `caf contract lint <path>` | validate `cafaye.yml` against the core schema, and the OpenAPI document it names | **works** |
+| `caf contract breaking <a> <b>` | compare two OpenAPI revisions, reporting which tier each change breaks | **works** |
 | `caf contract resolve <c> <v>` | resolve a core version constraint | **works** |
 | `caf mcp` | serve the cafaye tools over the Model Context Protocol | **works** |
 | `caf version` | print the caf version | **works** |
@@ -915,6 +916,97 @@ that core ships as prose rather than as data.
 The schema is checked first and the cross-field rules only run on a document
 that passed it, because every one of them compares two fields and a document
 with a field of the wrong type has nothing to compare.
+
+### The OpenAPI document a manifest names
+
+When a manifest declares `exposes.api`, `caf contract lint` reads that document
+too and reports it as **its own line**, because a document is not a manifest and a
+line naming the manifest would send the reader to the wrong file for a rule about
+an integer. A manifest that names a document which is not there is reported rather
+than skipped: `caf gen`, the contract tests and pantry all resolve the same path,
+and one that resolves to nothing is a contract surface that is declared and not
+there.
+
+The numeric rules are quoted from the Kubernetes API conventions rather than
+paraphrased, because a paraphrase is how a lint turns into a preference:
+
+| Rule | What it rejects |
+|---|---|
+| `openapi.int64-must-be-js-safe` | an `int64` whose declared bound leaves `-(2^53) < x < (2^53)` |
+| `openapi.no-unsigned-integer` | `uint32`, `uint64` and friends |
+| `openapi.no-floating-point` | `type: number`, or a `float` / `double` format |
+| `openapi.no-numeric-enum` | an `enum` holding a number |
+
+These are the hazard class that bites one language in the fleet and not the next:
+a 64-bit integer is exact in Go and Ruby and a `float64` in TypeScript, and a
+float cannot be round-tripped through any of them.
+
+One bound is deliberately **not** enforced: an `int64` with no bound at all is
+accepted. Kubernetes asks for `int64` fields to be bounds-checked, and enforcing
+the existence of a bound would be red on every unbounded integer in the fleet on
+the day it landed, including identity's own `expires_in`. What is enforced is that
+a bound somebody *did* write is inside the range a JSON reader can hold.
+
+`caf contract lint` also derives each document's **stability** from the version in
+its path — `openapi/v1.yaml` is stable, `openapi/v1alpha1.yaml` is alpha — and
+refuses a stable service that depends on a contract less stable than itself. It is
+decidable only when the dependency's own manifest is in the same run, and says so
+rather than passing silently on a dependency it cannot see.
+
+## `caf contract breaking`
+
+```
+$ caf contract breaking openapi/v1.yaml openapi/v1.1.yaml
+property-no-delete [SOURCE+JSON+WIRE] #/components/schemas/User/name: Previously present property "name" on schema "User" was deleted without reserving the name "name".
+$ echo $?
+1
+```
+
+Compares two revisions of one OpenAPI document and reports every breaking change,
+each tagged with the tiers it breaks:
+
+| Tier | Means |
+|---|---|
+| `SOURCE` | generated source code stops compiling |
+| `JSON` | a serialized payload stops round-tripping |
+| `WIRE` | the binary encoding changes |
+
+The tiers are buf's categories, and the row that shows why there are three rather
+than one boolean is a **renamed property**: it breaks `SOURCE` and `JSON` and not
+`WIRE`, because a binary encoding keys on a field's position and never carried the
+name. A single boolean has to answer that as both breaking and not, and whichever
+answer it picks is wrong for half of a six-language fleet. Every rule's tiers were
+read out of buf's own rule table and the derivation is asserted row by row in
+[`internal/contract/tier_test.go`](internal/contract/tier_test.go).
+
+`--tiers source,json` is the default and `WIRE` is opt-in, because no service in
+the fleet ships a binary encoding derived from its OpenAPI document yet. Pass
+`--tiers wire` for one that will, or `--tiers all`.
+
+### Leaving a mark where a property used to be
+
+OpenAPI has no `reserved` statement — buf's is a protobuf keyword and this format
+has no equivalent — so cafaye vendors an extension:
+
+```yaml
+components:
+  schemas:
+    User:
+      x-cafaye-reserved-properties: [old_name]
+      properties:
+        display_name: {type: string}
+```
+
+A property removed **with** its name in that list is sanctioned, and a property
+removed without it is breaking at every tier. The mark is also what distinguishes
+a **rename** from a deletion: a rename is a tombstone plus the new name, and it
+lands in `SOURCE+JSON` rather than at `WIRE`.
+
+Two projects arrived at this independently, which is the argument for the design
+rather than for the spelling: buf's `FIELD_NO_DELETE_UNLESS_NAME_RESERVED` and
+Kubernetes' `// +k8s:deprecated=width,protobuf=3`. The cost of getting it wrong is
+a name an old consumer still sends being reused for something else; the cost of a
+tombstone is one line naming where it used to live.
 
 ## `caf contract resolve`
 

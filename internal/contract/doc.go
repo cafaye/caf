@@ -1,13 +1,46 @@
-// Package contract validates cafaye manifests and resolves core version
-// constraints: the two things every other caf command will need and the two
-// things that must not be re-implemented per caller.
+// Package contract validates cafaye manifests, the OpenAPI documents they name,
+// and core version constraints: the things every other caf command will need and
+// must not re-implement per caller.
 //
 // A manifest (`cafaye.yml`) is YAML, but the contract it is written against is
-// a JSON Schema owned by cafaye/core. So this package is three layers:
+// a JSON Schema owned by cafaye/core. So this package is these layers:
 //
 //	schemas/manifest-0.2.json   a pinned copy of core's schema
 //	Parse + Check               the manifest, and every rule it breaks
 //	Lint                        a tree of manifests, one Finding each
+//	ParseAPIDocument + Lint     the OpenAPI document `exposes.api` names
+//	Classify                    two revisions, and which tier each break is in
+//	Stability                   what a document's version promises
+//
+// # The OpenAPI layer, and why it is a layer rather than a command
+//
+// A manifest that declares `exposes.api` has named a document, and every reader
+// in the platform resolves that same path: `caf gen`, the contract tests, pantry.
+// So `Lint` reads it as part of the same walk and reports it as its own Finding —
+// a document is not a manifest, and a line naming the manifest would send the
+// reader to the wrong file for a rule about an integer. `CheckData` is the other
+// half of the answer and deliberately cannot do this: `caf dev` calls it with
+// bytes it has already read and has no reason to walk a tree, so a layer that
+// reached for the filesystem from there would make a working command depend on
+// something it never needed.
+//
+// # Tiers, and why a boolean is not enough
+//
+// A breaking change is reported as one of three tiers — SOURCE (generated source
+// stops compiling), JSON (a payload stops round-tripping), WIRE (the binary
+// encoding changes) — because a rename is both breaking and not breaking at the
+// same time, and one boolean has to pick a side. The tiers are buf's categories:
+// FILE and PACKAGE are SOURCE, WIRE_JSON is JSON, WIRE is WIRE. Every rule's
+// tiers were read out of buf's own rule table rather than reasoned to, and the
+// derivation is asserted row by row in tier_test.go, which is the file to change
+// when a row moves.
+//
+// # What this package does not decide
+//
+// A dependency's stability is a fact about the dependency, and one manifest is not
+// a registry. The gate is decidable only when the dependency's own manifest is in
+// the same run; a dependency outside it is reported as nothing rather than
+// guessed at, on the same grounds as the event-prefix rule.
 //
 // # Why these two libraries
 //
@@ -70,4 +103,54 @@
 //     which core ships as a table in docs/event-naming.md, not as data. Until
 //     core publishes it as a machine-readable file, a linter can only check a
 //     repository against itself.
+//
+// # Rules the Kubernetes conventions state and this package does not enforce
+//
+// Four of the numeric rules ship; two sentences of the same Kubernetes paragraph
+// do not, and both are recorded here because a rule that is silently absent is
+// worse than one that is loudly deferred.
+//
+//   - "All public integer fields MUST use the Go `int32` or Go `int64` types, not
+//     `int` (which is ambiguously sized, depending on target platform)." An
+//     OpenAPI `integer` with no `format` IS the ambiguous width, and the honest
+//     rule would refuse it. Measured on this tree's own fleet before deciding:
+//     18 bare `integer`s in identity's document, 9 in billing's and guard's, 3 in
+//     pantry's. A rule that is red on every document in the fleet on the day it
+//     lands is not a gate, it is a migration nobody agreed to, so what ships is
+//     `openapi.no-unsigned-integer` and `openapi.int64-must-be-js-safe` and the
+//     width rule is core's to state when the fleet can be changed.
+//   - "`int64` fields must be bounds-checked to be within the range of
+//     `-(2^53) < x < (2^53)`." What `openapi.int64-must-be-js-safe` enforces is
+//     the range, not the existence of a bound: an `int64` with no `minimum` and
+//     no `maximum` may or may not exceed 2^53, and reporting it would be firing on
+//     the document's silence rather than on its content. identity's own
+//     `expires_in` is unbounded and is fine.
+//
+// # Findings for core, which is what this package cannot fix
+//
+//   - **A tier selection has nowhere durable to live.** `caf contract breaking
+//     --tiers` is a flag, so the selection is per invocation rather than per
+//     service, which is the shape a CI job has and not the shape a repository
+//     has. The honest home is core's manifest schema — an `exposes.api` sibling
+//     naming the tiers the service is held to — and caf can only read it once core
+//     publishes it. Adding the field here without core would be a second contract.
+//   - **A dependency's stability cannot be written in a manifest.** core's
+//     `semverRange` pattern is `^MAJOR.MINOR.PATCH` and admits no prerelease
+//     marker, so `dependencies[].version` cannot say "alpha" even if a service
+//     wants to. `convention.stable-depends-on-alpha` therefore only decides a
+//     dependency whose own manifest is in the same `Lint` run; making it decide
+//     per repository is a schema change, not a cafaye one.
+//   - **buf has an `ENUM_VALUE_SAME_NUMBER` rule and this format has nothing for
+//     it.** An OpenAPI enum member is a literal with no name and no ordinal, so
+//     both halves of buf's rule — the name moving, the number moving — are the
+//     same event here, and `enum-value-no-delete` already reports it.
+//
+// # One table, and where a tier is changed
+//
+// `breakingRules()` in breaking.go is the whole derivation, and every row says
+// which buf rule it copies and where that rule sits in buf's categories. Three
+// of the rows were wrong on the first pass and each says so at the row, because
+// "buf wins a disagreement" is only reviewable if the disagreements are written
+// down. `tier_test.go` asserts every row's tiers and the nesting buf's categories
+// have, and it is the file to change when a row moves.
 package contract

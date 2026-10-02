@@ -19,6 +19,7 @@ func TestRegistryContainsEveryCommand(t *testing.T) {
 		"env",
 		"gen",
 		"init",
+		"lock",
 		"mcp",
 		"new",
 		"reclaim",

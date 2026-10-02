@@ -19,6 +19,7 @@ internal/contract/  the core contract: manifests, the vendored schemas, versions
 internal/backup/    caf backup: the cross-file contract, the plan, the cycle
 internal/dev/       the local stack: the planner, the renderer, two seams
 internal/gen/       caf gen: the pure generator, and the drift gate that keeps it honest
+internal/lock/      caf lock: the pin over specs, vendored schemas and generated output, and its verifier
 internal/telemetry/ GENERATED, and compiled: caf's own copy of `caf gen telemetry`'s output
 internal/mcp/       the MCP server: transports, the served table, the SDK seam
 internal/ledger/    the reclamation ledger: what caf created, so cleanup is not memory
@@ -119,6 +120,63 @@ has a first consumer whose compiler and test runner are the ordinary gate, and i
 is the first thing to delete when caf has a real OTel setup of its own — at which
 point `caf gen telemetry` becomes a command other services run rather than a
 command caf runs on itself.
+
+**A pin is of the bytes, and it is the fourth thing `internal/ci` holds.** This
+tree vendors core's schemas, runs its own generator on its own manifest, and
+declares its gate against a schema core owns — and until `internal/lock` landed,
+nothing anywhere said "the generated output is exactly what the pinned spec
+produces." Every individual file looked fine: a vendored schema with one
+hand-edit in it is still valid JSON, and `internal/telemetry/telemetry.go` with a
+trailing newline appended to it still compiles, vets, passes `gofmt -l` and
+passes its twelve tests. The failure was a client and a server disagreeing on the
+wire, found in production rather than in a gate.
+
+`caf.lock` at the repository root is one entry per file the tree DECLARES — four
+kinds, `spec`, `vendored-schema`, `generated-client` and `rule-bundle` — each with
+the SHA-256 of its bytes, plus the `lockVersion` that invalidates the format
+wholesale and the `tool` that wrote it. Three rules hold it together:
+
+- **Nothing is discovered from a filename.** The vendored schemas are walked from
+  the directory whose README declares the convention, and the generated files are
+  read out of `internal/gen.TargetNames()` and `Output.Paths()` rather than from
+  a list written down beside them. A written-down list of "the three files caf gen
+  writes" would be a second copy of `internal/gen`'s idea of its own output, and
+  the failure when the two disagree is a lockfile pinning two of three — the
+  half-landed bump this was written for.
+- **The hash is of the bytes.** No git blob ids, so the lock verifies the same way
+  in a release tarball and in a Docker build context as it does in a checkout. A
+  pin that needs a version-control system present is a pin that cannot be checked
+  where a pin matters most.
+- **There is no timestamp.** Two runs over one tree produce the same bytes, so a
+  diff between two locks is a diff between two trees. Same argument as
+  `caf gen`, same payoff.
+
+`caf lock --verify` is the check, and **its output is the product**: every
+mismatch named with its path, its kind, the pinned hash, the hash on disk, and
+the remedy — all of them in one run, because a verifier that stops at the first
+teaches people to re-run it and ends up committing the other four one at a time.
+The remedy is stated once per problem, after the findings, because forty copies
+of the same paragraph above forty filenames is a wall.
+
+`internal/ci/lock_test.go` is the gate row, and it is an ordinary `go test` so
+`bin/prime` runs it — the only place a gate belongs here, the same argument the
+drift gate above makes for itself. Its second test is the self-test: it takes the
+committed lock, copies the tree it pins into a scratch directory, changes one byte
+of one pinned vendored schema, and asserts the report goes red and names it. A
+check that has never been watched red is a check that might not work, and
+`TestEveryProblemIsDrivableAndNamed` in `internal/lock` is the same control over
+the same command with every problem as a row.
+
+**`gate.yml` is a pinned file, and that is worth knowing before adding a test.**
+`caf lock` treats it as the tree's one `rule-bundle`: a named, versioned rule set
+owned by core's `gate.schema.json` and checked by core's own checker. So a commit
+that adds tests raises the floor in `gate.yml` AND has to re-run
+`go run ./cmd/caf lock .`, because the floor's hash moved. That is friction, it
+is deliberate, and the argument is the same one as for the vendored schemas: a
+declaration that changed without the change being deliberate is the defect. The
+alternative — leaving `gate.yml` out of the lock — would leave the file that
+decides what "green" means here as the one artifact in this repository with no
+pin on it at all.
 
 `internal/backup` is `caf backup`, split the same way, and it exists so that a
 second command that needs to know what a backup is does not grow its own:
@@ -377,10 +435,15 @@ has no YAML encoder and a general one would order the document's keys by
 whatever order its own map does — which is the one thing about it that must not
 happen. There are two packages with dependencies, and the argument is the same in both:
 the standard library cannot do the job. `internal/ledger`, `internal/ports`,
-`internal/reclaim` and `internal/ryuk` have none, and that is a constraint rather
-than an accident: the reclamation path is the one that has to keep working when
-nothing else does, and a dependency graph on the path that cleans up after a
-failure is a graph that can fail to load at exactly the wrong moment.
+`internal/reclaim`, `internal/ryuk` and `internal/lock` have none, and that is a
+constraint rather than an accident: the reclamation path is the one that has to
+keep working when nothing else does, and a dependency graph on the path that
+cleans up after a failure is a graph that can fail to load at exactly the wrong
+moment. `internal/lock` holds to it for a second reason: the failure it exists to
+catch is two processes disagreeing about a vendored schema or a generated client,
+and a verifier that cannot be rebuilt from a release tarball with nothing but a
+standard library is a verifier nobody can run in the one place a tarball gets
+checked.
 
 `internal/contract` has two: `github.com/goccy/go-yaml` for YAML (chosen for
 parse errors with a line and a column, and for zero dependencies) and

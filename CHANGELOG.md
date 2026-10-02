@@ -8,6 +8,43 @@ All notable changes to caf are recorded here. The format follows
 
 ### Added
 
+- **`caf lock <path>` — one file that pins the tree's specs, its vendored
+  schemas and its generated clients, and `caf lock --verify <path>` to check
+  them.** buf pins three classes in its lockfile — modules, the remote plugins
+  that are the code generators, and the policies, which are named versioned rule
+  bundles — and its `--verify-only` fails when the files on disk are not what
+  would have been generated. This fleet had the parts and no whole:
+  `cafaye-ts` recorded repo/path/sha/sha256 per vendored file and `cafaye-py`
+  and `cafaye-rb` did not, and nothing anywhere said "the generated output is
+  exactly what the pinned spec produces".
+
+  `caf.lock` is one entry per file the tree **declares**, in four kinds:
+  `spec` (`cafaye.yml` and the OpenAPI document `exposes.api` names),
+  `vendored-schema` (every `*.json` under `internal/contract/schemas`),
+  `generated-client` (every path `caf gen` writes for *this* manifest, read out
+  of `internal/gen` rather than from a list written beside it) and `rule-bundle`
+  (`gate.yml`, the one declaration here that a named versioned rule set owns).
+  Each carries the SHA-256 of the file's bytes, plus the `lockVersion` that
+  invalidates the format wholesale and the `tool` that wrote it.
+
+  Nothing is discovered from a filename, the hash is of the bytes rather than a
+  git blob id so a tarball verifies the same way a checkout does, and there is
+  no timestamp so two runs over one tree produce the same bytes and a diff
+  between two locks is a diff between two trees.
+
+  **`--verify` is the check and its output is the product**: every mismatch, not
+  the first, each naming the path, the kind, the pinned hash, the hash on disk
+  and the remedy — regenerate-or-revert, restore-or-re-lock, re-lock. It exits
+  1 and leaves stderr empty, because the report is the output and a report said
+  twice is a sentence in two streams, one of which a CI log greps and the other
+  of which nobody reads.
+
+  caf pins its own tree in `caf.lock` and `internal/ci/lock_test.go` verifies it
+  on every gate run, with a self-test row that copies the tree, moves one byte
+  of one pinned schema, and asserts the report goes red and names it. **Adding
+  tests to caf now also means re-running `caf lock`**, because `gate.yml` is a
+  pinned `rule-bundle` and raising a floor moves its hash.
+
 - **`caf backup <service>` — take one real backup and prove it restores.** A
   backup that has never been drilled is not a backup:
   `config/kamal-backup.yml` is a *specification* until the accessory that runs

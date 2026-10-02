@@ -1,0 +1,19 @@
+{
+  "lockVersion": 1,
+  "tool": "caf 0.0.0-dev",
+  "hash": "sha256",
+  "files": [
+    {"path": "cafaye.yml", "kind": "spec", "sha256": "a7268f608db1b83d437f12e3c521c00a4cdeb746f469834c77448aa4963019c5"},
+    {"path": "gate.yml", "kind": "rule-bundle", "sha256": "7d0612c53e4f3fb67f749139bf2a6440e1fda4a97ede6c25e0eab273318a0dc5"},
+    {"path": "internal/contract/schemas/manifest-0.2.json", "kind": "vendored-schema", "sha256": "9f90b3707d39da40b2416ac815ad9127681b65c8d87e5b50879e5f7af69ef0b9"},
+    {"path": "internal/contract/schemas/telemetry/logs.schema.json", "kind": "vendored-schema", "sha256": "816cb1066d17bc13cef82d095208bb895b75bb347bb897771bda7890b08f78e6"},
+    {"path": "internal/contract/schemas/telemetry/metrics.schema.json", "kind": "vendored-schema", "sha256": "1f816b16b3962a1390d71a482466bf3b33aa67fbcb0023d06ebefb5d3699746a"},
+    {"path": "internal/contract/schemas/telemetry/otel-endpoint.schema.json", "kind": "vendored-schema", "sha256": "ddd927d7e5d58e7b5996a81469ff67e14eadb6855bc8fcbb57dfd0d8211e1bf7"},
+    {"path": "internal/contract/schemas/telemetry/redaction.schema.json", "kind": "vendored-schema", "sha256": "1e5cd92a79bd7d63fffaa2caba6f6e49d99e291de3362be8d7281991c5581171"},
+    {"path": "internal/contract/schemas/telemetry/span-naming.schema.json", "kind": "vendored-schema", "sha256": "d846c78dec600456d0de20383510e6bcb37e23cd083e1d82717dbe401d3cd495"},
+    {"path": "internal/contract/schemas/telemetry/traces.schema.json", "kind": "vendored-schema", "sha256": "101132a6792318670c352a8f61a3231387748eb53ec86d0a23dbac55a71ed576"},
+    {"path": "internal/telemetry/telemetry.go", "kind": "generated-client", "sha256": "a98e03587ef60ebc94f8da3db67da3cf8eb3eb0f3bca80a7f023079fc807a941"},
+    {"path": "internal/telemetry/telemetry_test.go", "kind": "generated-client", "sha256": "4694193af6ef4d5a1ae563297086c82a53cd6df72754adbf6d090791bf587235"},
+    {"path": "telemetry/otel-endpoint.json", "kind": "generated-client", "sha256": "968e1dbf4e6955fc8c56abf89451a90ae696036f2d4e96019c53ada3806fabfc"}
+  ]
+}

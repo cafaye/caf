@@ -83,6 +83,8 @@ a run in which they passed.
 | `caf deploy <service>` | deploy a service or app to the platform | **works** |
 | `caf backup <service>` | take one real backup and prove it restores, into a scratch database it then drops | **works** |
 | `caf gen telemetry` | write the OpenTelemetry setup a service needs to honour core's telemetry contract | **works** |
+| `caf lock <path>` | pin this tree's specs, vendored schemas and generated clients in `caf.lock` | **works** |
+| `caf lock --verify <path>` | recompute every pin and name every file that no longer matches | **works** |
 | `caf contract lint <path>` | validate `cafaye.yml` against the core schema, and the OpenAPI document it names | **works** |
 | `caf contract breaking <a> <b>` | compare two OpenAPI revisions, reporting which tier each change breaks | **works** |
 | `caf contract resolve <c> <v>` | resolve a core version constraint | **works** |

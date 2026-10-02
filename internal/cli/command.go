@@ -74,6 +74,7 @@ func Commands() []*Command {
 		newEnvCommand(),
 		newGenCommand(),
 		newInitCommand(),
+		newLockCommand(),
 		newMCPCommand(),
 		newNewCommand(),
 		newReclaimCommand(reclaimDeps{}),

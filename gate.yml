@@ -127,7 +127,14 @@ gate:
       # count tests in files a generator emitted. Without this line, an emitted Go
       # file that did not compile would still have moved the suite floor — by a
       # number — and nobody would have been sent to the file.
-      minimum: 14
+      #
+      # 15, which is 14 plus `internal/lock` — `caf lock`, its writer and its
+      # verifier. It is the second package here whose whole job is to be a gate:
+      # `internal/ci`'s new tests verify this repository's `caf.lock` against the
+      # tree and prove the verification goes red on a tampered pin, so a
+      # `internal/lock` that shipped untested would leave the suite floor moving
+      # by nothing at all and this line as the only thing that noticed.
+      minimum: 15
     - id: suite
       match: '^caf: [0-9]+ packages, ([0-9]+) top-level passes, [0-9]+ subtest passes, 0 failures, [0-9]+ skips$'
       # 435, measured, and the number is the interesting part of this file.
@@ -320,7 +327,19 @@ gate:
       # first version fixed the canary and left the invariant unasserted, which
       # would have let the same gap open again in the other direction: an order-list
       # entry with no allowlist entry behind it advertises a name `Lookup` refuses.
-      minimum: 688
+      #
+      # caf-lock-01 added 34, in `internal/lock`, `internal/cli` and `internal/ci`,
+      # and moved this floor to 714: 722 declared, 8 skips, so 714 run. The
+      # arithmetic is unchanged and so is the reason it moved: nothing here is
+      # env-gated, so no new test arrived as a new tier and `expectedSkips` stays
+      # at 8 — the same reason as caf-30's seven and caf-33's two.
+      #
+      # It is also the first floor in this file to move for a package whose whole
+      # job is to be a gate over another gate. `internal/ci`'s three new tests
+      # are the ones that verify `caf.lock` against this tree and that prove the
+      # verification goes red on a tampered pin, so a suite that counts them is
+      # counting the check that the rest of this file's meaning rests on.
+      minimum: 714
     - id: subtests
       match: '^caf: [0-9]+ packages, [0-9]+ top-level passes, ([0-9]+) subtest passes, 0 failures, [0-9]+ skips$'
       # 537, measured, and it is a different detector from the one above.
@@ -391,7 +410,15 @@ gate:
       # `TestTheAllowlistAndItsOrderListAreTheSameSet`, one row per signal rather
       # than three asserts — which is why this floor moved by three and the suite
       # floor by one for the same finding.
-      minimum: 864
+      #
+      # caf-lock-01 moved it to 875 on a measurement of 876, same one-lower
+      # rule. Eleven of the new rows are inside `internal/lock`'s
+      # `TestEveryProblemIsDrivableAndNamed` — one row per failure mode of the
+      # verifier, each driving the real verifier over a real tree — and the rest
+      # are in `internal/cli`'s lock tests. It is the same case this floor exists
+      # for: the table IS the specification of a bug's shape, so it is written as
+      # rows, and the floor is what notices if they stop running.
+      minimum: 875
     #
     # THE ONE WITH NO FLOOR, and the schema sanctions that: a `minimum` is
     # omitted "for a proof that reports nothing countable (a step that must

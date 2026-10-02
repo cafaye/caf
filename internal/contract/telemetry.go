@@ -139,6 +139,16 @@ type Signal struct {
 	// across all three signals and `TestTheResourceAttributeListIsTheSameOn
 	// EverySignal` is what holds caf to that.
 	Resource []Attribute
+	// ErrorTypes is the closed `error.type` vocabulary this signal's allowlist
+	// carries, read out of that allowlist rather than from a table of its own.
+	//
+	// Every signal declares the same `enum` and core's own suite asserts the
+	// three copies match; `TestEverySignalCarriesTheSameErrorType` is caf's half
+	// of that, and carrying the list on the signal is what lets the generator
+	// emit it without deciding for itself which signal is authoritative. A
+	// generator that emitted twelve classes where core has thirteen is a
+	// generator that has just made one of them unreachable.
+	ErrorTypes []string
 }
 
 // Endpoint is core's `*_OTEL_ENDPOINT` contract and its no-op path, read out of
@@ -466,7 +476,35 @@ func readSignal(name string, doc []byte, attributesDef, resourceDef string) (Sig
 	}
 	signal.Resource = resource
 
+	signal.ErrorTypes, err = errorTypesIn(signal.Allowlist, name)
+	if err != nil {
+		return Signal{}, err
+	}
 	return signal, nil
+}
+
+// errorTypesIn pulls the `error.type` vocabulary out of a signal's allowlist.
+//
+// An error rather than an empty slice, because `error.type` is how a
+// fleet-wide error view exists at all: a signal whose allowlist has lost it
+// cannot report a failure in a shape anything can group by, and a generator that
+// emitted a setup with no error vocabulary would be emitting a setup where a
+// real failure has nowhere to go but `_OTHER` — which core carries precisely so
+// that instrumentation is never *forced* to invent a class, and which is
+// therefore a class a service should reach for last rather than always.
+func errorTypesIn(allowlist []Attribute, signal string) ([]string, error) {
+	for _, attribute := range allowlist {
+		if attribute.Name != "error.type" {
+			continue
+		}
+		if len(attribute.Values) == 0 {
+			return nil, fmt.Errorf("signal %s: error.type has no enum, so the closed vocabulary core requires "+
+				"is not there and every class would be free text", signal)
+		}
+		return attribute.Values, nil
+	}
+	return nil, fmt.Errorf("signal %s: error.type is not on the allowlist, so a failure on this signal has no "+
+		"class to record", signal)
 }
 
 // readAllowlist reads one `$defs` entry that is an object whose every property
@@ -710,15 +748,17 @@ func contentWords(doc []byte) ([]string, error) {
 // setup enforces and the reader of the pattern cannot verify.
 func segmentsInPattern(pattern string) int {
 	open := strings.LastIndex(pattern, "{")
+	// Core's patterns end in `$`, so the trailing group is `{1,3}$` and the
+	// slice below has to take off the `}` as well as the `$`. Trimming the `}`
+	// as a separate step rather than folding both into an index arithmetic is
+	// what stops that off-by-one coming back — it came back once, and the
+	// symptom was a generated setup refusing every span name with more than the
+	// service prefix in it, which reads as a grammar problem and is not one.
 	if open < 0 || !strings.HasSuffix(pattern[open:], "}$") {
-		// Core's patterns end in `$`, so the trailing group is `{1,3}$` and not
-		// `{1,3}`. Reading it as the latter is how this returned zero the first
-		// time, and a zero here means a generated setup refuses every span name
-		// with more than the service prefix in it.
 		return 0
 	}
-	inner := pattern[open+1 : len(pattern)-1]
-	parts := strings.SplitN(inner, ",", 2)
+	bounds := strings.TrimSuffix(pattern[open+1:], "}$")
+	parts := strings.SplitN(bounds, ",", 2)
 	if len(parts) != 2 {
 		return 0
 	}

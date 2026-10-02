@@ -109,7 +109,15 @@ gate:
       # 12, which is 11 plus `internal/backup` — `caf backup`, its three live
       # tests and its restic-lock retry. The same argument, one packet on: a
       # backup command that shipped untested would move nothing except this line.
-      minimum: 12
+      #
+      # 13, which is 12 plus `internal/gen` — `caf gen telemetry`, the generator
+      # and its drift gate. It is the first floor in this file to move for a
+      # package that added tests to NO other package, which is the whole argument
+      # for having a package count at all: a generator that transcribed core's
+      # allowlists instead of reading them out of core's schemas would have moved
+      # the two test-count floors below and this one not at all, and this line is
+      # what makes that visible.
+      minimum: 13
     - id: suite
       match: '^caf: [0-9]+ packages, ([0-9]+) top-level passes, [0-9]+ subtest passes, 0 failures, [0-9]+ skips$'
       # 435, measured, and the number is the interesting part of this file.
@@ -210,7 +218,34 @@ gate:
       # proves caf's own `childStatus` still does. Fixing the first by deleting
       # the pass-through branch would sail past both unless the second were
       # there, which is why `caf env up`'s status is a floor and not a detail.
-      minimum: 605
+      #
+      # caf-gen-01 added 50, in `internal/gen`, `internal/contract` and
+      # `internal/cli`, and moved this floor to 643: 651 declared, 8 skips, so 643
+      # run. `expectedSkips` stays at 8 for the same reason every packet since
+      # caf-29 gives: none of the fifty is env-gated, so no new test arrived as a
+      # new tier.
+      #
+      # Most of the fifty are in `internal/gen`, and the number is the point of
+      # the packet rather than a side effect of it. `caf gen telemetry` emits the
+      # OpenTelemetry setup a service needs to honour core's telemetry contract,
+      # and a generator whose output nobody checks is a generator whose idea of
+      # correct is whatever it happens to do — so the fifty are mostly the two
+      # directions that matter: every value read out of core reaches the emitted
+      # bytes, and two runs over one manifest produce identical bytes. The
+      # emitted `otel-endpoint.json` is additionally handed to core's own
+      # vendored schema before it is written, which is the one check that cannot
+      # share the generator's blind spot.
+      #
+      # The floor is 643 and NOT the 655 measured mid-packet, and the reason is
+      # this packet's own drift gate. `internal/gen/testdata/` holds a golden
+      # `telemetry_test.go` that declares twelve top-level tests; `go test` runs
+      # none of them, because `testdata` is excluded from every package, but a
+      # naive walk of the tree counts them. `internal/ci`'s walker excludes
+      # `testdata` for that reason — so a first measurement taken while the
+      # golden was being written came out twelve high, and pinning 655 would have
+      # been `TestTheGateFloorIsNotAWall` going red on a gate that is otherwise
+      # green. The ratchet caught the bad number rather than the missing floor.
+      minimum: 643
     - id: subtests
       match: '^caf: [0-9]+ packages, [0-9]+ top-level passes, ([0-9]+) subtest passes, 0 failures, [0-9]+ skips$'
       # 537, measured, and it is a different detector from the one above.

@@ -252,10 +252,9 @@ func liveTestsInTree(t *testing.T) []liveTest {
 			return err
 		}
 		if entry.IsDir() {
-			// Generated and hidden trees hold no caf source, and walking them
-			// is how a check turns into a slow one.
-			switch entry.Name() {
-			case ".git", "node_modules", "dist", "vendor":
+			// Generated, hidden and fixture trees hold no caf test source, and
+			// walking them is how a check turns into a slow one.
+			if notASourceTree(entry.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -628,8 +627,7 @@ func testFuncsInTree(t *testing.T) int {
 			return err
 		}
 		if entry.IsDir() {
-			switch entry.Name() {
-			case ".git", "node_modules", "dist", "vendor":
+			if notASourceTree(entry.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -644,6 +642,34 @@ func testFuncsInTree(t *testing.T) int {
 		t.Fatalf("walk the tree for test functions: %v", err)
 	}
 	return declared
+}
+
+// notASourceTree is whether a directory holds no caf test source, whatever it is
+// called.
+//
+// `testdata` is here because the go toolchain excludes it from every package, and
+// that is not a convention this file is free to ignore. It stopped being
+// theoretical when `internal/gen` began keeping its drift gate's goldens there as
+// real Go files: the golden `telemetry_test.go` declares twelve top-level tests,
+// `go test` runs none of them because they are not part of any package, and this
+// walker's count came out twelve above the gate's.
+//
+// The ratchet is what caught it. `TestTheGateFloorIsNotBelowTheSuiteCafClaimsToHave`
+// reported twenty-one skips where `expectedSkips` says eight, which is a number
+// nobody could account for — and the fix belongs in this walker's idea of what a
+// test is, not in `expectedSkips`. Raising the floor to match a count that
+// includes tests `go test` never runs would have been the exact "edit the assertion
+// to make it green" that the ratchet's own comment forbids.
+//
+// The other four names are unchanged from the first version of this file and are
+// for the ordinary reasons: version control, two package managers' dependency
+// trees, and a vendored build.
+func notASourceTree(name string) bool {
+	switch name {
+	case ".git", "node_modules", "dist", "vendor", "testdata":
+		return true
+	}
+	return false
 }
 
 // testFuncsInFile counts the test functions in one file. An unparseable file is

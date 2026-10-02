@@ -124,25 +124,32 @@ func endpointVariable(service string, spec contract.TelemetrySpec) (string, erro
 	if !pattern.MatchString(variable) {
 		return "", fmt.Errorf("caf gen telemetry: the service name %q derives the endpoint variable %q, which "+
 			"core's own pattern %q refuses. caf will not invent a third spelling, and a variable name no schema "+
-			"accepts is a name no collector config can agree with",
+			"accepts is a name no collector config can agree with.\n"+
+			"  Through `caf gen` this is unreachable: core's manifest schema already constrains `name` to "+
+			"`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`, and upper-casing that with the dashes removed always matches. "+
+			"So either the manifest is not valid — run `caf contract lint` — or core has widened the name "+
+			"pattern and this generator needs to be told which way",
 			service, variable, spec.Endpoint.VariablePattern)
 	}
 	return variable, nil
 }
 
-// endpointVariableNote is the line that goes into the emitted declaration when
-// the derivation dropped a dash, and "" when it did not.
+// endpointVariableNote is the line that goes into the emitted declaration and
+// the generated Go source when the derivation dropped a dash, and "" when it did
+// not.
 //
-// It is computed rather than templated because the note has to be absent when
-// it does not apply: a note that says "if your name has a dash, this is what
-// happened" in a file whose name has no dash is a sentence every reader of
-// every generated file pays to skip.
+// It is computed rather than templated because the note has to be absent when it
+// does not apply: a note that says "if your name has a dash, this is what
+// happened" in a file whose name has no dash is a sentence every reader of every
+// generated file pays to skip. And it is short because core's schema caps
+// `notes` at 400 characters, which is a real constraint on this sentence rather
+// than on the contract.
 func endpointVariableNote(service string) string {
 	if !strings.Contains(service, "-") {
 		return ""
 	}
-	return fmt.Sprintf("%s contains a dash and core's endpoint-variable pattern admits none, so the variable is "+
-		"%s: a repository named %s and one named %s would share it.",
+	return fmt.Sprintf("%s has a dash and core's variable pattern admits none, so the variable is %s; "+
+		"%s and %s would share it.",
 		service, strings.ToUpper(strings.ReplaceAll(service, "-", ""))+"_OTEL_ENDPOINT",
 		service, strings.ReplaceAll(service, "-", ""))
 }

@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/telemetry/redaction.schema.json",
+  "title": "cafaye telemetry redaction boundary",
+  "description": "The rule this whole spec exists for: prompt and completion content must never appear in a telemetry span. muse is an LLM gateway, so its spans naturally want to record the prompt — 'which model, which prompt shape, how long' is the obvious thing to instrument and it is the obvious thing that writes every customer's content into a searchable, retained, widely-readable log store. PLAN.md §7b puts enforcement at the OTel collector as one chokepoint, with per-service allowlists as defence in depth, and this schema is what makes that claim checkable rather than architectural: it declares WHERE enforcement lives, WHAT may be recorded about an LLM call, and WHAT may never be recorded, and both kit's collector config and a service's own SDK setup are checked against it. The default is deny. A telemetry pipeline that drops an attribute it does not recognise is the only shape of this control that survives a well-meaning change made six months from now by someone who did not read this file — which is the realistic way this leaks, not an attacker. The house canary is muse/tests/test_trace_propagation.py, which places a unique string in both the prompt and the completion and asserts it appears nowhere in the rendered span payload, separately from asserting the dangerous key names are absent; this schema is the fleet-level form of that test. See docs/observability.md and D13 in DECISIONS.md for the enforcement-point call.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "enforcedAt", "default", "allowed", "neverRecord", "llmCallAttributes"],
+  "properties": {
+    "version": {
+      "const": "0.2",
+      "description": "The core spec this policy was written against, so a reader can tell how stale a collector config is. Same field, same meaning as fleet.yml's `spec`."
+    },
+    "enforcedAt": {
+      "enum": ["collector", "service"],
+      "description": "WHERE the redaction boundary is enforced. `collector` is the choice (PLAN.md §7b): one chokepoint in a single process, auditable in one place, and a service cannot bypass it by forgetting to configure something. `service` means each service's own SDK allowlist is the enforcement point, which is defence in depth with nothing behind it. The value is here rather than in prose because a kit collector config and a service SDK setup are both checked against this file, and a policy that only says 'enforce it somewhere' is not checkable. See D13 in DECISIONS.md for the alternatives and the cost of flipping.",
+      "default": "collector"
+    },
+    "defenceInDepth": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1,
+      "uniqueItems": true,
+      "description": "The per-service allowlists that remain in place behind the chokepoint. Two independent barriers to the same leak, because the realistic failure is one of them being removed by a well-meaning change and nobody noticing for a month — which is exactly what muse's canary is for. Never empty: a policy with no second line is a policy whose only line is the one that can be misconfigured."
+    },
+    "default": {
+      "const": "deny",
+      "description": "Default-deny, and not configurable. An attribute that is not on `allowed` is not emitted. Default-allow would make the safe case the thing you have to remember, and the safe case is the one nobody is thinking about when they are debugging something at 3am."
+    },
+    "allowed": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 120,
+        "not": {
+          "anyOf": [
+            { "pattern": "(?i)prompt" },
+            { "pattern": "(?i)completion" },
+            { "pattern": "(?i)message" },
+            { "pattern": "(?i)content" },
+            { "pattern": "(?i)text" },
+            { "pattern": "(?i)body" },
+            { "pattern": "(?i)header" },
+            { "pattern": "(?i)input" },
+            { "pattern": "(?i)output" },
+            { "pattern": "(?i)arguments" },
+            { "pattern": "(?i)instructions" },
+            { "pattern": "(?i)transcript" },
+            { "pattern": "(?i)query" }
+          ]
+        }
+      },
+      "uniqueItems": true,
+      "description": "Every attribute name a span may carry, fleet-wide. An allowlist rather than a denylist of bad names, because a denylist has to enumerate everything that can leak and the realistic leak is a name nobody predicted. A content-policy rejection quotes the offending content back, so a scrubber is downstream of the leak; a name that is not on this list never reaches the wire."
+    },
+    "neverRecord": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 6,
+      "uniqueItems": true,
+      "description": "The things that may never be recorded, stated as a list so a reader can check the allowlist against it and so the two halves of the policy can be compared. It is a list of SUBJECTS rather than of attribute names: `prompt` is not an attribute, it is the thing an attribute would carry, and the test that matters is that no allowed name is about one of these. `minItems` is a floor so an emptied list is a schema failure rather than a policy that has quietly become permissive."
+    },
+    "prohibited": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 3,
+      "uniqueItems": true,
+      "description": "The subset of `neverRecord` that also has a named attribute someone will reach for. The rest are prohibited by being absent. `error.message` is in here rather than only in `neverRecord` because it is the one attribute that is already on a natural allowlist — a tracing SDK adds it by default — so the prohibition has to be explicit or it will be shipped by a default rather than by a decision."
+    },
+    "llmCallAttributes": {
+      "type": "array",
+      "minItems": 5,
+      "description": "The complete set of facts about an LLM call that may be recorded, as [name, type] pairs. This is the positive half of the redaction boundary, and it is here because a policy that only says what may not be recorded is not implementable: somebody debugging a routing decision needs to know what to reach for instead. Token counts, model id, latency, status and finish reason are facts about HOW a call was served; the prompt and the completion are facts about WHAT THE CALLER SAID, and that is the line. See docs/observability.md.",
+      "items": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 2,
+        "prefixItems": [
+          { "type": "string", "minLength": 1, "maxLength": 64 },
+          { "enum": ["string", "int", "number", "bool"] }
+        ],
+        "items": false
+      }
+    },
+    "verifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "How a service proves the boundary holds, as a path to a test. A boundary with no test is a boundary that holds until the first well-meaning change, so the policy names the test rather than trusting that one exists. The house pattern is muse/tests/test_trace_propagation.py: a canary string placed in both the prompt and the completion, asserted absent from the rendered payload of every span, and asserted separately from the key-name check so truncation cannot be what makes it pass."
+    }
+  }
+}

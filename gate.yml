@@ -109,7 +109,15 @@ gate:
       # 12, which is 11 plus `internal/backup` — `caf backup`, its three live
       # tests and its restic-lock retry. The same argument, one packet on: a
       # backup command that shipped untested would move nothing except this line.
-      minimum: 12
+      #
+      # 13, which is 12 plus `internal/gen` — `caf gen telemetry`, the generator
+      # and its drift gate. It is the first floor in this file to move for a
+      # package that added tests to NO other package, which is the whole argument
+      # for having a package count at all: a generator that transcribed core's
+      # allowlists instead of reading them out of core's schemas would have moved
+      # the two test-count floors below and this one not at all, and this line is
+      # what makes that visible.
+      minimum: 13
     - id: suite
       match: '^caf: [0-9]+ packages, ([0-9]+) top-level passes, [0-9]+ subtest passes, 0 failures, [0-9]+ skips$'
       # 435, measured, and the number is the interesting part of this file.
@@ -225,7 +233,48 @@ gate:
       # and not a problem with it — the number was taken from an earlier state of
       # the tree, and the tree moved because three more tests landed in the same
       # commit.
-      minimum: 638
+      #
+      # caf-gen-01 added 38, in `internal/gen` (18, a new package), `internal/contract`
+      # (12) and `internal/cli` (8), and moved this floor to 643: 651 declared, 8
+      # skips, so 643 run. `expectedSkips` stays at 8 for the same reason every
+      # packet since caf-29 gives: none of the thirty-eight is env-gated, so no new
+      # test arrived as a new tier.
+      #
+      # Most of them are in `internal/gen`, and the number is the point of the packet
+      # rather than a side effect of it. `caf gen telemetry` emits the OpenTelemetry
+      # setup a service needs to honour core's telemetry contract, and a generator
+      # whose output nobody checks is a generator whose idea of correct is whatever
+      # it happens to do — so the eighteen are mostly the two directions that matter:
+      # every value read out of core reaches the emitted bytes, and two runs over one
+      # manifest produce identical bytes. The emitted `otel-endpoint.json` is
+      # additionally handed to core's own vendored schema before it is written, which
+      # is the one check that cannot share the generator's blind spot, and the
+      # negative half of that is asserted too — a validation that only ever sees
+      # documents it agrees with has proved nothing.
+      #
+      # 651 DECLARED IS A NUMBER THIS PACKET HAD TO FIX ITS OWN WALKER TO REACH, and
+      # the wrong number was the interesting one. `internal/ci` counts
+      # `func TestX(t *testing.T)` over the tree; this packet puts the drift gate's
+      # goldens in `internal/gen/testdata/` as real Go files, the golden
+      # `telemetry_test.go` declares twelve top-level tests, and `go test` runs none
+      # of them because the go toolchain excludes `testdata` from every package.
+      #
+      # So the walker said 663 and the gate reported 650, and the ratchet named
+      # twenty-one skips where `expectedSkips` says eight. Twenty-one is a number
+      # nobody can account for, which is the whole reason this ratchet exists: it
+      # caught a defect in the check rather than a missing floor. The fix went into
+      # `internal/ci`'s notion of what a test is — `testdata` is now excluded like
+      # `.git` and `vendor` — and NOT into `expectedSkips`, because raising the floor
+      # to match a count that includes tests `go test` never runs is precisely the
+      # "edit the assertion to make it green" that this test's own comment forbids,
+      # and it would have left a floor no run of any gate could satisfy.
+      #
+      # caf-contract-01 and caf-gen-01 each raised this floor on their own branch,
+      # and both were merged into master in one merge. Summing two branch-local
+      # measurements would be arithmetic, not a measurement, so the number below
+      # was re-measured on the merged tree with bin/prime. Both rationales are
+      # kept because both describe real tests that are still in the tree.
+      minimum: 676
     - id: subtests
       match: '^caf: [0-9]+ packages, [0-9]+ top-level passes, ([0-9]+) subtest passes, 0 failures, [0-9]+ skips$'
       # 537, measured, and it is a different detector from the one above.
@@ -277,7 +326,13 @@ gate:
       # run reporting MORE than the floor passes. A floor that has to be exactly
       # right to avoid flaking is a flake generator, which is the mistake
       # `timeoutSeconds` above this section exists to avoid.
-      minimum: 760
+      #
+      # RE-MEASURED AT 831 ON THE MERGED TREE, and set one lower for the reason
+      # above. caf-gen-01 added the drift tables (`internal/gen/drift_test.go`) and
+      # the telemetry allowlist table (`internal/contract/telemetry_test.go`), and
+      # both are rows rather than functions — which is exactly the case this floor
+      # exists for, and why it moved 70 while the suite floor moved 32.
+      minimum: 830
     #
     # THE ONE WITH NO FLOOR, and the schema sanctions that: a `minimum` is
     # omitted "for a proof that reports nothing countable (a step that must

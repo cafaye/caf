@@ -82,7 +82,7 @@ a run in which they passed.
 | `caf dev [project]` | run the local development stack | **works** |
 | `caf deploy <service>` | deploy a service or app to the platform | **works** |
 | `caf backup <service>` | take one real backup and prove it restores, into a scratch database it then drops | **works** |
-| `caf gen <target>` | generate code and config from cafaye contracts | flags only |
+| `caf gen telemetry` | write the OpenTelemetry setup a service needs to honour core's telemetry contract | **works** |
 | `caf contract lint <path>` | validate `cafaye.yml` against the core schema, and the OpenAPI document it names | **works** |
 | `caf contract breaking <a> <b>` | compare two OpenAPI revisions, reporting which tier each change breaks | **works** |
 | `caf contract resolve <c> <v>` | resolve a core version constraint | **works** |
@@ -1191,7 +1191,10 @@ Phase 0 (v0, now):
 - [ ] `caf new` — scaffold from the template catalog
 - [x] `caf dev` — the local stack: compose from the manifest, health-gated, idempotent
 - [ ] `caf dev` — tilt, and a TUI (see [AGENTS.md](AGENTS.md); both are a later packet)
-- [ ] `caf gen` — generate SDKs from contracts
+- [x] `caf gen telemetry` — the OpenTelemetry setup, its suite, and the endpoint
+  declaration, every value read out of core's vendored telemetry schemas
+- [ ] `caf gen` — typed SDK clients from an API document (a manifest field does
+  not record one yet, so there is nothing to generate them from)
 - [ ] `caf contract fetch` — pull a contract from a registry
 - [x] `caf deploy` — a real Kamal 2 deploy, health-gated, with a refusal for a
       published accessory port and an honest `--dry-run`

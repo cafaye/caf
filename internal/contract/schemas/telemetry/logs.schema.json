@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/telemetry/logs.schema.json",
+  "title": "cafaye log signal",
+  "description": "What a cafaye log record is permitted to carry. The third signal's attribute allowlist, and it is deliberately the smallest of the three: logs are the highest-volume signal, the one with the shortest retention, and the one a support engineer reads with the least context. A log record is a structured fact about an event, not a place to put the event. The same three rules apply as for traces — a closed attribute list, no name containing a word that names content, and `error.type` rather than `error.message` — plus the attribute budget. This signal is also where PLAN.md §7b's crash layer lands: every one of the six languages already writes fatal errors to stderr, and a container's stderr is the log stream, so uncaught panics are captured with zero per-language SDK. The body is therefore the one place free text is expected, and it is bounded, because a log body is the most likely place for a caller-supplied string to end up by accident. The log signal carries the same `error.type` vocabulary as the other two, from a closed `enum` rather than a pattern — on this signal the reason is that a log record's attributes are label candidates, and a class that interpolates a value turns one searchable stream into one per value. See docs/observability.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["severityText", "body", "attributes"],
+  "properties": {
+    "severityText": {
+      "type": "string",
+      "enum": ["trace", "debug", "info", "warn", "error", "fatal"],
+      "description": "The OTel severity, lowercase. An enum rather than a free string so a log backend's level filter has a closed set to filter on, which is the whole reason Loki is useful as a crash store."
+    },
+    "severityNumber": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 24,
+      "description": "The OTel numeric severity. Optional; when present it must agree with `severityText`, which tests/test_specs.py cannot check because a log record is a runtime artefact rather than a document. A backend that sorts by the number and a query that filters by the text would otherwise disagree."
+    },
+    "body": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "description": "The human-readable line. Bounded at 2048 characters, and bounded deliberately: the body is where a caller-supplied string ends up by accident, and an unbounded log body is an unbounded log volume. A body that needs structure belongs in an attribute, which is allowlisted; a body that needs a caller's words does not belong in telemetry at all."
+    },
+    "attributes": {
+      "$ref": "#/$defs/logsAttributes",
+      "description": "The log record's structured attributes, drawn from the log allowlist. Default-deny, as on every signal: an attribute nobody declared is not emitted."
+    },
+    "resource": {
+      "$ref": "#/$defs/resource",
+      "description": "Process-level attributes — service identity, version, deployment, tenant and account. Exempt from the metric cardinality cap, which is the reason identity is here. See metrics.schema.json."
+    },
+    "traceId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$",
+      "description": "The W3C trace id, when the record happened inside a trace. This is a protocol field rather than an attribute, which is the distinction: on a SPAN it is a field, and as a MEASUREMENT attribute it is prohibited for being unbounded. The same 32 hex characters, two different answers, because the two are different things."
+    },
+    "spanId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$",
+      "description": "The W3C span id, when the record happened inside a span."
+    }
+  },
+  "$defs": {
+    "logsAttributes": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 12,
+      "description": "The complete set of attribute names a cafaye log record may carry. Twelve is a hard ceiling and it is below the OTel default limit of 128 on purpose: every attribute on a log record is a candidate for a Loki label, every label is a stream, and streams are what a log store runs out of. A small closed set is a store that stays queryable.",
+      "properties": {
+        "log.severity": {
+          "type": "string",
+          "enum": ["trace", "debug", "info", "warn", "error", "fatal"],
+          "description": "The severity, mirrored as an attribute so a query can filter on it without parsing the body."
+        },
+        "service.name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 40,
+          "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$",
+          "description": "The emitting service. Normally a RESOURCE attribute; permitted here because a log store that fans several services into one stream needs it as a label, and it is bounded by the size of the fleet."
+        },
+        "error.type": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^([a-z][a-z0-9]*(_[a-z0-9]+)*|_OTHER)$",
+          "enum": [
+            "_OTHER",
+            "cancelled",
+            "circuit_open",
+            "conflict",
+            "connection_failed",
+            "dependency_unavailable",
+            "internal_error",
+            "invalid_request",
+            "policy_denied",
+            "provider_auth",
+            "provider_rejected",
+            "rate_limited",
+            "timeout"
+          ],
+          "description": "The error CLASS. A log record that reports a failure without a class is a wall of ungrouped text, which is the outcome the user asked whether cafaye could avoid (PLAN.md §7b). Never `error.message`: a provider's content-policy rejection quotes the offending content back, so the message is a prompt by another route. **Closed vocabulary, byte-identical to the same `enum` in traces.schema.json and metrics.schema.json** — a class that means one thing on logs and another on spans is the same failure D14 rejects when it rejects the language's own exception class name, and a log record is exactly where an ungrouped class is hardest to notice because nobody reads a log store by exception type. Twelve classes and the OTel fallback `_OTHER`; D18 says why each earns its place, D19 why the fallback is here: so instrumentation is never forced to invent a class, and because an alert on `_OTHER` is an alert that this service has not classified its own errors. `pattern` and `maxLength` are the second line rather than the rule. Handled and retried errors are not recorded at all — a retry that succeeded is not an error, and recording it makes the error rate a lie — and nothing on any signal allowlists an attribute that could say otherwise. Stability: `error.type` is Stable, the cross-signal coupling in `recording-errors.md` is Development (D18)."
+        }
+      }
+    },
+    "resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Attributes attached once per process. Byte-identical to the same `$defs` in metrics.schema.json, and for the same reason: identity is unbounded as a dimension and exempt as a resource. tests/test_specs.py asserts the two copies agree.",
+      "properties": {
+        "service.name": { "type": "string", "minLength": 2, "maxLength": 40, "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$" },
+        "service.version": { "type": "string", "maxLength": 64 },
+        "service.instance.id": { "type": "string", "maxLength": 128 },
+        "service.namespace": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$", "description": "The grouping this service belongs to — `cafaye` for every one of them. Stable in the OTel semantic conventions and the documented companion to `service.name`: it is what lets one collector group the fleet under a parent instead of showing seven unrelated services. muse sets it by hand (`src/muse/telemetry.py:390`) and is the only publisher that does, which is why it was missing here and why the list being closed cost a real span a validation it should have passed." },
+        "deployment.environment": { "type": "string", "enum": ["development", "test", "staging", "production"] },
+        "telemetry.sdk.name": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Which SDK built this process's log records — `opentelemetry` in every language here. Stable semconv, and **not** an optional embellishment: billing sets it by hand at `lib/kit/telemetry.rb:183`, and the Python SDK's `Resource.create/1` merges it from its own default resource whether or not the caller asked. A service cannot suppress it without opting out of the SDK's defaults, so a resource allowlist without it does not describe a log record — it describes the publishers whose resource is built without one, which is identity (Go's schemaless `resource.NewWithAttributes`) and courier (its own resource map)." },
+        "telemetry.sdk.language": { "type": "string", "minLength": 1, "maxLength": 32, "description": "The implementation language, from the same two places as `telemetry.sdk.name`, and load-bearing for the same reason: a record that says which runtime produced it is what tells an operator that a fleet with four languages has four resource shapes. identity and courier report none of these three, for the reasons named beside `telemetry.sdk.name`." },
+        "telemetry.sdk.version": { "type": "string", "maxLength": 32, "description": "The SDK's own version — the fact that distinguishes two spans this spec cannot otherwise tell apart, since both satisfy every constraint above. Bounded to one value per process, like every other resource attribute, which is why it belongs here rather than on a measurement." },
+        "tenant_id": { "type": "string", "maxLength": 64, "description": "PROHIBITED as a measurement attribute, permitted here. The log store's per-tenant view is a label filter, which is exactly the query the overflow point would otherwise lose." },
+        "account_id": { "type": "string", "maxLength": 64, "description": "Same reasoning as tenant_id." }
+      }
+    }
+  }
+}

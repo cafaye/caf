@@ -16,6 +16,58 @@ The file is byte-for-byte identical to core's. It carries no header comment
 because JSON has no comment syntax and editing it would break the byte
 identity the sha256 pins; this file is the header instead.
 
+## `telemetry/` — the six schemas `caf gen telemetry` is derived from
+
+`telemetry/` holds six more copies, vendored for the same reason and pinned the
+same way. `caf gen telemetry` reads the attribute allowlists, the prohibition,
+the resource contract, the `error.type` vocabulary, the span-name pattern and
+the endpoint/no-op contract out of **these files**, so every fact it emits is a
+fact core wrote rather than a fact somebody typed into caf. That is the whole
+mechanism behind the generated artifact not drifting: a core bump that adds an
+`error.type` value or drops `db.operation` changes the bytes caf emits, and
+`internal/gen`'s drift gate turns red on the committed golden.
+
+| File | Core path under `schemas/telemetry/` | sha256 |
+| --- | --- | --- |
+| `span-naming.schema.json` | same name | `d846c78dec600456d0de20383510e6bcb37e23cd083e1d82717dbe401d3cd495` |
+| `traces.schema.json` | same name | `101132a6792318670c352a8f61a3231387748eb53ec86d0a23dbac55a71ed576` |
+| `metrics.schema.json` | same name | `1f816b16b3962a1390d71a482466bf3b33aa67fbcb0023d06ebefb5d3699746a` |
+| `logs.schema.json` | same name | `816cb1066d17bc13cef82d095208bb895b75bb347bb897771bda7890b08f78e6` |
+| `otel-endpoint.schema.json` | same name | `ddd927d7e5d58e7b5996a81469ff67e14eadb6855bc8fcbb57dfd0d8211e1bf7` |
+| `redaction.schema.json` | same name | `1e5cd92a79bd7d63fffaa2caba6f6e49d99e291de3362be8d7281991c5581171` |
+
+| | |
+| --- | --- |
+| Core commit | `98b7eb6a9aef9e09de723559f649d0393a5ed1b5` (`merge(core-26)`) |
+| Spec version | 0.2 |
+| Prose half | `docs/observability.md` in the same commit |
+
+Three things about *why these six*, because the directory holds ten and a
+reader will ask:
+
+- **`probes.schema.json` is not here.** `healthz` and `readyz` are a contract
+  about a service's dependency list, and no field in a `cafaye.yml` records
+  what a service depends on at runtime. Emitting a `readyz` that checked
+  nothing is the exact failure that schema exists to prevent, so caf emits
+  nothing rather than emitting a guess.
+- **The three `slo*` schemas are not here.** They are about windows and budgets
+  a service declares about itself over time, which is a decision a person
+  makes per service and not something derivable from a manifest. Nothing in
+  this packet's scope emits them.
+- **`redaction.schema.json` is vendored and not yet read for its lists.** Its
+  `neverRecord`, `prohibited` and `verifier` are a *policy's* content and live
+  in core's `examples/valid/telemetry/redaction.json`, not in the schema — a
+  schema says the list has at least six entries, not what they are. caf does
+  not invent them; see `internal/gen`'s doc for what it emits instead and
+  which half of that decision is a manager's.
+
+The four telemetry rules that are genuinely in the schemas, and therefore the
+four caf reads rather than writes, are: the per-signal attribute allowlists
+(`$defs/tracesAttributes`, `$defs/measurementAttributes`, `$defs/logsAttributes`),
+the prohibition on unbounded identifiers (`$defs/measurementAttributes.not`),
+the resource attribute list (`$defs/resource`, byte-identical on all three
+signals), and the `error.type` closed vocabulary (one shared `enum`).
+
 The name is the **spec** version, not the caf version that shipped it, because
 the interesting fact about a pin is which contract it enforces. `caf 0.1.0`
 enforcing `manifest-0.2.json` is correct; a file called `manifest-0.1.json`
@@ -76,6 +128,40 @@ Then, in this order:
 If a refresh makes a vendored example invalid, core broke backwards
 compatibility in a way its own suite does not catch. That is a **major** core
 bump per `docs/manifest-conventions.md`, and the fix belongs in core, not here.
+
+## Refreshing `telemetry/`
+
+Same procedure, and the same rule about not editing in place. The pins live in
+`telemetryPins` in `telemetry.go`, one per file, and
+`TestEveryVendoredTelemetrySchemaIsPinned` fails on any hand edit:
+
+```sh
+core=$(git -C ../core rev-parse HEAD)
+for f in span-naming traces metrics logs otel-endpoint redaction; do
+  cp "../core/schemas/telemetry/$f.schema.json" \
+     "internal/contract/schemas/telemetry/$f.schema.json"
+  shasum -a 256 "internal/contract/schemas/telemetry/$f.schema.json"
+done
+```
+
+Then, in order:
+
+1. Update the table above and `telemetryPins`.
+2. Read core's `docs/observability.md` at that commit and check whether the
+   *prose* changed meaning as well as the patterns. This directory can only pin
+   the JSON; the argument for a rule and the rule's name both live in the
+   document, and a prose-only tightening that arrives a release before its
+   pattern is the normal shape of a core bump.
+3. **`go test ./internal/gen/ -run TestTheGeneratedTelemetryHasNotDrifted`.**
+   This is the check a telemetry refresh exists to pass or fail, and it fails by
+   design: core's schemas now say something the committed golden in
+   `internal/gen/testdata/` does not. Read the diff it prints, decide whether
+   the change is one caf can adopt, and then regenerate the golden with
+   `go test ./internal/gen/ -run TestUpdateTheGeneratedTelemetry -update`
+   **only once you have read the diff**. Regenerating first is how a breaking
+   core bump becomes an invisible one.
+4. Re-raise `gate.yml`'s floors if the refresh added a test, and re-run
+   `bin/prime`.
 
 ## Why a copy and not a fetch
 

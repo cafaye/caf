@@ -1132,3 +1132,191 @@ owner:
 		t.Errorf("container port = %d, want the language's 8080", root.Port)
 	}
 }
+
+// The catalog a service's own docker-compose.yml describes, run through the
+// planner.
+//
+// `dependencies: ["postgres"]` is what anybody writes for a service that needs
+// a database, and it was refused:
+//
+//	caf dev: unknown dependency: postgres depends on postgres, and no
+//	registry says how to run it
+//
+// Postgres is not a cafaye service, so no catalog can answer for it and none
+// ever will. The planner asked anyway, in `dependenciesOf` — the third place
+// that treats local infrastructure specially, after `add` and `wire`, and the
+// only one that had not learned to. It then formatted its own refusal with the
+// service name in both the subject and the object slot, so the sentence was
+// about a database depending on itself.
+func TestACatalogMayNameLocalInfrastructureAsADependency(t *testing.T) {
+	catalog := Catalog{
+		"alpha": Entry{
+			Name:         "alpha",
+			Image:        "ghcr.io/cafaye/alpha:1.0.0",
+			Port:         8080,
+			Dependencies: []string{"postgres"},
+		},
+	}
+
+	stack := mustPlan(t, stackManifest, catalog, Options{Build: buildGo})
+
+	names := stack.Names()
+	if !contains(names, "postgres") {
+		t.Errorf("plan = %v, want postgres: naming it in a catalog must be neither what makes it appear nor what stops it", names)
+	}
+	// The edge has to exist, not only the container. A database that is running
+	// but not depended on is a database the service may be started ahead of, and
+	// the first request through it is the thing that fails.
+	if deps := depsOf(service(t, stack, "alpha")); deps["postgres"] == "" {
+		t.Errorf("alpha depends_on = %v, want postgres", deps)
+	}
+}
+
+// Redis is the same case and gets its own assertion because it is a different
+// name reaching a different row of the infrastructure table. "Postgres works" is
+// not a reason to believe "redis works", and one of the two being right is the
+// shape of bug that survives to a demo.
+func TestACatalogMayNameRedisAsADependency(t *testing.T) {
+	catalog := Catalog{
+		"alpha": Entry{
+			Name:         "alpha",
+			Image:        "ghcr.io/cafaye/alpha:1.0.0",
+			Port:         8080,
+			Dependencies: []string{"redis"},
+		},
+	}
+
+	stack := mustPlan(t, stackManifest, catalog, Options{Build: buildGo})
+	if names := stack.Names(); !contains(names, "redis") {
+		t.Errorf("plan = %v, want redis", names)
+	}
+}
+
+// `-no-infra` is the switch that says "this stack wants no local database".
+// A catalog that names postgres must not be a way around it: the entry
+// describes the service, and the operator's flag describes the stack.
+func TestNoInfraStillWinsOverACatalogThatNamesPostgres(t *testing.T) {
+	catalog := Catalog{
+		"alpha": Entry{
+			Name:         "alpha",
+			Image:        "ghcr.io/cafaye/alpha:1.0.0",
+			Port:         8080,
+			Dependencies: []string{"postgres"},
+		},
+	}
+
+	stack := mustPlan(t, stackManifest, catalog, Options{Build: buildGo, NoInfra: true})
+	if names := stack.Names(); contains(names, "postgres") {
+		t.Errorf("plan = %v, want no infrastructure with NoInfra set", names)
+	}
+}
+
+// Naming infrastructure is now allowed and is not required: an entry that names
+// nothing gets the same stack, because `wire` attaches every piece of local
+// infrastructure to every service that is not itself infrastructure. This is
+// the form a catalog will actually be written in, and it has to keep working —
+// the fix above must not have made the unmentioned case an error.
+func TestACatalogNeedNotNameInfrastructureToGetIt(t *testing.T) {
+	catalog := Catalog{
+		"alpha": Entry{Name: "alpha", Image: "ghcr.io/cafaye/alpha:1.0.0", Port: 8080},
+	}
+
+	stack := mustPlan(t, stackManifest, catalog, Options{Build: buildGo})
+	names := stack.Names()
+	if !contains(names, "postgres") {
+		t.Errorf("plan = %v, want postgres: an entry that names no infrastructure still gets it", names)
+	}
+	if deps := depsOf(service(t, stack, "alpha")); deps["postgres"] == "" {
+		t.Errorf("alpha depends_on = %v, want postgres", deps)
+	}
+}
+
+// The refusal a developer actually meets when a dependency is not in any
+// catalog — and the one that used to name the service twice.
+//
+// `add` refuses before `walk` ever asks, so this message comes from `add`. The
+// duplicate-name bug was in the unreachable branch next to it, which is why
+// this test asserts on the reachable sentence and the code comment records the
+// other one rather than pretending a test can reach it.
+func TestAnUnknownDependencyIsNamedOnceInTheRefusal(t *testing.T) {
+	catalog := Catalog{
+		"alpha": Entry{Name: "alpha", Image: "ghcr.io/cafaye/alpha:1.0.0", Dependencies: []string{"nowhere"}},
+	}
+
+	_, err := Plan(mustManifest(t, stackManifest), catalog, Options{Build: buildGo})
+	if err == nil {
+		t.Fatal("Plan = nil error, want a refusal for a dependency no registry describes")
+	}
+	if strings.Contains(err.Error(), "nowhere depends on nowhere") {
+		t.Errorf("err = %q, want it not to read as a service depending on itself", err)
+	}
+	if got := strings.Count(err.Error(), "nowhere"); got != 1 {
+		t.Errorf("err = %q names the service %d times, want once", err, got)
+	}
+}
+
+// The rendered document is where this was found, and it is asserted on the
+// document rather than on the graph for once, because a repeated edge is
+// invisible in the graph and only becomes a defect when it is written out.
+//
+// Naming postgres in a catalog entry AND having `wire` attach local
+// infrastructure put the same dependency in `depends_on` twice, and the compose
+// document carried a duplicate mapping key. YAML permits it; the compose spec
+// does not say what the second one means.
+func TestADependencyIsNotRenderedTwice(t *testing.T) {
+	catalog := Catalog{
+		"alpha": Entry{
+			Name:         "alpha",
+			Image:        "ghcr.io/cafaye/alpha:1.0.0",
+			Port:         8080,
+			Dependencies: []string{"postgres"},
+		},
+	}
+
+	stack := mustPlan(t, stackManifest, catalog, Options{Build: buildGo})
+
+	// The graph, first: one edge, not two.
+	seen := make(map[string]int)
+	for _, dep := range service(t, stack, "alpha").DependsOn {
+		seen[dep.Name]++
+	}
+	if count := seen["postgres"]; count != 1 {
+		t.Errorf("alpha has %d edges to postgres, want 1", count)
+	}
+
+	// The document, because that is where it was wrong. A duplicate key is one
+	// of the few defects a test can only see after rendering, which is the whole
+	// argument for asserting on the compose text as well as on the plan.
+	document := stack.Compose
+	block := between(t, document, "  alpha:\n", "\n  postgres:")
+	if got := strings.Count(block, "      postgres:"); got != 1 {
+		t.Errorf("alpha's depends_on names postgres %d times, want 1:\n%s", got, block)
+	}
+	// Every dependency in the block must be distinct, not just this one: the
+	// same mistake is available for any name a catalog and the infra table
+	// agree on, and `redis` is the other one.
+	for name, count := range seen {
+		if count != 1 {
+			t.Errorf("alpha has %d edges to %s, want 1", count, name)
+		}
+	}
+	if got := strings.Count(block, "      redis:"); got > 1 {
+		t.Errorf("alpha's depends_on names redis %d times, want at most 1:\n%s", got, block)
+	}
+}
+
+// between returns the text between two markers, failing the test if either is
+// missing — because a test that silently matches nothing is a test that passes
+// for a document this code never produced.
+func between(t *testing.T, document, after, before string) string {
+	t.Helper()
+	_, rest, found := strings.Cut(document, after)
+	if !found {
+		t.Fatalf("the compose document has no %q:\n%s", after, document)
+	}
+	text, _, found := strings.Cut(rest, before)
+	if !found {
+		t.Fatalf("the compose document has no %q after %q:\n%s", before, after, document)
+	}
+	return text
+}

@@ -336,6 +336,31 @@ type dependency struct {
 // dependenciesOf returns the services a name depends on: the project's come
 // from the manifest, a registry entry's from the registry.
 func (r *resolver) dependenciesOf(name string) ([]dependency, error) {
+	// Postgres and redis have no dependencies, and asking the registry about
+	// one is a question with no answer — they are not cafaye services, so no
+	// catalog describes them, and none ever will. This is the third place that
+	// has to know it, after add and wire, and it was the one missing.
+	//
+	// The failure was found by writing the catalog a service's own
+	// docker-compose.yml describes. `dependencies: ["postgres"]` is the obvious
+	// thing to write for a service that needs a database, and it was refused:
+	//
+	//	caf dev: unknown dependency: postgres depends on postgres, and no
+	//	registry says how to run it
+	//
+	// "postgres depends on postgres" is not a thing anybody wrote. It is this
+	// function reached for an infra name, asked the registry, been told no,
+	// and then formatted its own error with `name` in both the subject and the
+	// object slot. So the refusal was not just wrong about the catalog — it was
+	// a sentence describing a cycle between a database and itself.
+	//
+	// The edge itself is not lost. `wire` attaches every piece of local
+	// infrastructure to every service that is not itself infrastructure, which
+	// is why a catalog entry does not have to name postgres to get one: it is
+	// what `-no-infra` is for turning off.
+	if isInfra(name) {
+		return nil, nil
+	}
 	if name == r.manifest.ServiceName() {
 		declared := r.manifest.Dependencies()
 		deps := make([]dependency, 0, len(declared))
@@ -346,8 +371,22 @@ func (r *resolver) dependenciesOf(name string) ([]dependency, error) {
 	}
 	entry, found := r.registry.Resolve(name)
 	if !found {
-		return nil, fmt.Errorf("%w: %s depends on %s, and no registry says how to run it",
-			ErrUnknownDependency, name, name)
+		// UNREACHABLE TODAY, and kept because a resolver that returns a nil
+		// slice and an error for a different reason is a worse thing to find
+		// later. `add` refuses an unresolvable name before `walk` ever calls
+		// this, so the developer-facing message for a missing dependency comes
+		// from `add` and is tested there. Reverting the wording below to the
+		// `X depends on X` it used to be leaves the whole suite green, which is
+		// the measurement behind this paragraph rather than an assumption: a
+		// test that claimed to cover this would be covering nothing.
+		//
+		// The sentence names the service once. "X depends on X" was what this
+		// printed, because `name` was formatted into both the subject and the
+		// object slot — and a sentence about a service depending on itself is a
+		// bug report about a cycle, which is a different defect with a different
+		// fix, sent to somebody whose catalog has no cycle in it.
+		return nil, fmt.Errorf("%w: %s is named as a dependency and no registry says how to run it; point -registry at a catalog that does (pantry serves the official one)",
+			ErrUnknownDependency, name)
 	}
 	deps := make([]dependency, 0, len(entry.Dependencies))
 	for _, dep := range entry.Dependencies {
@@ -509,11 +548,48 @@ func (r *resolver) wire() {
 			}
 		}
 		env = env.With(svc.Environment)
-		sort.Slice(deps, func(i, j int) bool { return deps[i].Name < deps[j].Name })
-		svc.DependsOn = deps
+		svc.DependsOn = dedupeDeps(deps)
 		svc.Environment = env.Sorted()
 		r.services[name] = svc
 	}
+}
+
+// dedupeDeps drops a repeated edge, keeping the first.
+//
+// Both sources can name the same dependency and until caf-30 nothing reconciled
+// them: a service declares one in its catalog entry, and `wire` attaches every
+// piece of local infrastructure to every service. Naming postgres — the obvious
+// thing to write for a service with a database — put it in `depends_on` twice,
+// and the rendered compose carried a duplicate mapping key:
+//
+//	depends_on:
+//	  postgres:
+//	    condition: service_healthy
+//	  postgres:
+//	    condition: service_healthy
+//
+// YAML permits a repeated key and the compose spec does not define what the
+// second one means, so which condition wins is the parser's business rather
+// than caf's. Both entries were identical here, which is why it looked
+// harmless — and why it would have stayed harmless right up until a catalog
+// spelled out a condition that differed, which nothing lets a catalog do yet.
+// A document that is merely redundant is still a document two readers disagree
+// about.
+//
+// The sort that used to run here moved duplicates next to each other, which
+// made them easy to drop. It is kept, because the rendered document's
+// dependency order should not depend on map iteration order.
+func dedupeDeps(deps []Dep) []Dep {
+	sort.Slice(deps, func(i, j int) bool { return deps[i].Name < deps[j].Name })
+
+	unique := deps[:0]
+	for i, dep := range deps {
+		if i > 0 && dep.Name == deps[i-1].Name {
+			continue
+		}
+		unique = append(unique, dep)
+	}
+	return unique
 }
 
 // declaredDeps is a service's own dependencies: the manifest's for the project,

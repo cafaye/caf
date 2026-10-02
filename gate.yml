@@ -188,12 +188,19 @@ gate:
       #
       # caf-29 added 8, all in `internal/dev`, and moved this floor to 597. The
       # arithmetic is unchanged and so is the reason it moved: 605 declared, 8
-      # skips, so 597 run. The skip count did NOT move, which is the part worth
+      # skips, so 597 run.
+      #
+      # caf-30 added 6 more, also in `internal/dev`, and moved it to 603: 611
+      # declared, 8 skips, so 603 run. Three are the infrastructure-as-dependency
+      # cases (postgres, redis, and `-no-infra` still winning), one is that a
+      # catalog need not name infrastructure to get it, one is the unknown-
+      # dependency sentence, and one is the rendered document carrying a
+      # dependency twice. None is env-gated, so `expectedSkips` stays at 8. The skip count did NOT move, which is the part worth
       # stating — none of these seven is env-gated, so a new test did not arrive
       # as a new tier, and `expectedSkips` stays at 8. A commit that added a test
       # which skipped would have had to move that number too, and this comment is
       # where the two would otherwise drift apart silently.
-      minimum: 597
+      minimum: 603
     - id: subtests
       match: '^caf: [0-9]+ packages, [0-9]+ top-level passes, ([0-9]+) subtest passes, 0 failures, [0-9]+ skips$'
       # 537, measured, and it is a different detector from the one above.

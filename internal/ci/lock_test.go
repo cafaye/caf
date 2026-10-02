@@ -97,6 +97,17 @@ func TestTheTreeMatchesItsCommittedLock(t *testing.T) {
 // The file it changes is chosen as a vendored schema rather than written down,
 // and chosen by kind rather than by path: a schema is what a core refresh
 // changes, and this test is about proving the check sees that.
+//
+// WHAT THIS DOES NOT PROVE, because the honest answer is "less than it looks":
+// on THIS tree the six telemetry schemas were already pinned, one hash per file,
+// by `internal/contract`'s `telemetryPins` before this packet landed, and
+// `internal/gen`'s drift gate already compares the generated files byte for byte.
+// So for the `vendored-schema` and `generated-client` kinds this repository has
+// two checks that agree, and the one this test drives is the second. The kinds
+// `caf lock` is genuinely the first check for here are `spec` and `rule-bundle` —
+// `cafaye.yml` and `gate.yml`, neither of which anything in this repository
+// hashed before it — and REPORT-caf-lock-01.md is where that is written down in
+// full.
 func TestTheCommittedLockGoesRedWhenAPinnedFileMoves(t *testing.T) {
 	root := repoRoot(t)
 

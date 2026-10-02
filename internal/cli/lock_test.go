@@ -181,12 +181,21 @@ func TestVerifyGoesRedOnAHandEditedVendoredSchemaAndGreenOnARestore(t *testing.T
 	}
 }
 
-// The same for a GENERATED file, which is the half the packet is really about.
+// The same for a GENERATED file.
 //
-// `internal/telemetry/telemetry.go` compiles, vets, passes gofmt and passes its
-// twelve tests with a trailing newline appended to it. Nothing in this
-// repository would ever have noticed. That is the whole argument for the pin, and
-// this is the row that proves it rather than asserts it.
+// What is true, measured on this tree rather than assumed: a trailing newline
+// appended to `internal/telemetry/telemetry.go` leaves it compiling, vetting and
+// passing its twelve generated tests, and `gofmt -l` notices — but `gofmt -l`
+// is required before a commit and is NOT in `bin/prime`, so the fast gate and CI
+// are green. (An edit *inside* the file is caught earlier still, by
+// `internal/gen`'s drift gate, which regenerates and compares bytes; that is
+// `caf gen`'s half of the same argument and it was here first.)
+//
+// So this row is not the first line of defence for generated files in THIS tree.
+// What `caf lock` uniquely adds here is the other two kinds — `cafaye.yml` and
+// `gate.yml`, neither of which anything hashed before this packet — and the fact
+// that all four are checked by one mechanism rather than by a pin in each of
+// three packages.
 func TestVerifyCatchesAHandEditedGeneratedFileThatStillBuildsAndTests(t *testing.T) {
 	root := lockProject(t)
 	if code, _, stderr := runCLI(t, testVersion, "lock", root); code != exitSuccess {

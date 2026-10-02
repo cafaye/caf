@@ -58,6 +58,16 @@
 // the registry's own graph and a cycle in it is a cycle in pantry, reported
 // with its path rather than as a container that never starts.
 //
+// A key no field above is called is REFUSED, naming the service it is in, the
+// key, and the keys that would have been right. That is the opposite of what a
+// JSON decoder does with one, and it is deliberate: this is the only document
+// caf reads that a person wrote by hand, so a key that does not parse is a
+// typo rather than a version skew, and the honest answer to a typo is to say
+// so. The escape hatch for everything else is a key prefixed `x-`, which is
+// dropped on purpose — the difference between ignoring a key and ignoring it on
+// instruction. `name` may be left out, because it defaults to the key the entry
+// is filed under; if it is present it has to agree with that key.
+//
 // caf ships no catalog. There is no table of images here, because an image
 // reference guessed by a CLI is a reference that pulls the wrong thing, and
 // guessing is what "invent endpoints that do not exist" looks like in a config

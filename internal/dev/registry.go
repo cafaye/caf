@@ -1,11 +1,13 @@
 package dev
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"sort"
 	"strings"
 )
@@ -190,11 +192,52 @@ func (c Catalog) Names() []string {
 	return names
 }
 
+// extensionPrefix opens a key that a catalog may carry and caf does not model.
+// It is kamal's spelling, borrowed whole, because the reasoning is the same in
+// both places: refusing unknown keys is only safe if there is a way to say
+// something that is not modelled yet, and a prefix is that way. Without it,
+// "refuse what you do not know" and "let the document grow" are the same
+// decision, and the first one wins by accident.
+const extensionPrefix = "x-"
+
 // ReadCatalog decodes a registry document: one JSON object keyed by service
 // name, which is the shape written out in the package doc.
 func ReadCatalog(r io.Reader) (Catalog, error) {
+	// The document is read once, whole, because it is checked twice: once by
+	// hand for the keys no field is called, and once by the decoder for the
+	// types. It is a file a person committed; reading it twice costs nothing
+	// that matters and buys an error that names the service the key is in.
+	document, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("%w: read the catalog: %w", ErrBadCatalog, err)
+	}
+
+	// A catalog is the one caf input that is HAND-WRITTEN, COMMITTED, and read
+	// by a decoder that quietly discards what it does not recognise. Every other
+	// input caf parses is produced by a program that shares caf's types. So a
+	// misspelled key here is a typo a human made, and the default decoder turns
+	// that typo into silence: the key is dropped, the field keeps its zero
+	// value, and the catalog goes on to be believed.
+	//
+	// The failure that produced this was measured, not imagined. A catalog whose
+	// only image was spelled `imag` was accepted, and the error the developer
+	// was shown three layers later was "the local registry names no image for
+	// identity" — a statement about the catalog's CONTENTS, when the catalog has
+	// an image in it and the document is spelled wrong. The author is sent to
+	// edit a file that is already correct.
+	//
+	// The cost is real, and `x-` is what pays it: a producer that writes a key
+	// caf does not know yet is refused rather than ignored, unless it says so
+	// with the prefix. Refusing is the right way round for a file that is edited
+	// by hand — it is the only caf input where a mistake is a human's typing and
+	// a machine's silence.
+	cleaned, err := checkCatalogKeys(document)
+	if err != nil {
+		return nil, err
+	}
+
 	var raw map[string]Entry
-	if err := json.NewDecoder(r).Decode(&raw); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(cleaned)).Decode(&raw); err != nil {
 		// A catalog is one object keyed by service name. Saying so is more use
 		// than the decoder's complaint about a type, because the decoder cannot
 		// know what the document was supposed to be.
@@ -215,6 +258,201 @@ func ReadCatalog(r io.Reader) (Catalog, error) {
 		}
 	}
 	return Catalog(raw), nil
+}
+
+// checkCatalogKeys refuses a key no field of Entry (or of the one struct nested
+// inside it) is called, and returns the document with the extension keys removed
+// so the decode that follows is left with nothing to refuse.
+//
+// IT DOES THIS ITSELF RATHER THAN CALLING `json.Decoder.DisallowUnknownFields`,
+// and the reason is worth the twelve lines it costs.
+//
+//  1. The stdlib's complaint is `json: unknown field "imag"`. It names the key
+//     and nothing else — not the service the key is in, and not the keys that
+//     would have been right. In a catalog holding nine services that is a grep
+//     through a hundred-line file, and the grep is how a developer concludes the
+//     file is fine and the tool is wrong.
+//
+//  2. Its signature is not the same in every Go this repository builds under.
+//     `DisallowUnknownFields` returns the decoder in Go 1.25 — the version
+//     `mise.toml` pins and `go.mod` names — and returns nothing in Go 1.26, so
+//     the chained spelling and the statement spelling each fail on one of them.
+//     A gate that is green on the maintainer's toolchain and red in CI is a
+//     gate nobody trusts, and this file would have been exactly that: it
+//     compiles on the Go on this machine and not on the Go the repository
+//     declares. Reading the shape off the struct by reflection is the same
+//     answer on both, and it is the same answer the stdlib would have given.
+//
+// Every key is reported, not just the first. A catalog is written by one person
+// in one sitting, so the typos in it tend to come from the same mistake, and
+// fixing them one run at a time is a fix per typo.
+func checkCatalogKeys(document []byte) ([]byte, error) {
+	// Decoded as raw messages so that a value of the WRONG TYPE is not this
+	// function's error to raise: a `port` of "8080" is a type problem and the
+	// decoder words it better than a list of field names would.
+	var services map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(document, &services); err != nil {
+		// Not the shape this function checks — an array, a scalar, malformed
+		// JSON. Those are the decoder's sentences to say, so it says them.
+		return document, nil
+	}
+
+	known := fieldNames[Entry]()
+	health := fieldNames[Healthcheck]()
+	offenders := make([]string, 0, 4)
+	for _, service := range sortedKeys(services) {
+		entry := services[service]
+		for _, key := range sortedKeys(entry) {
+			if _, isField := known[key]; isField || strings.HasPrefix(key, extensionPrefix) {
+				continue
+			}
+			offenders = append(offenders, fmt.Sprintf("%q in the entry for %s", key, service))
+		}
+		// `healthcheck` is the one struct nested inside an entry, so it is the
+		// only place a key can hide from the loop above. A `retries` spelled
+		// `retires` is the same defect one level down, and it is worse here: a
+		// healthcheck with no retries is a container reported ready the first
+		// time it answers, which is the failure healthchecks exist to prevent.
+		offenders = append(offenders, healthcheckOffenders(entry, service, health)...)
+	}
+	if len(offenders) == 0 {
+		return stripExtensionKeys(services), nil
+	}
+
+	return nil, fmt.Errorf("%w: %s no entry has: %s; caf would have dropped %s without saying so. An entry takes %s; a healthcheck takes %s; and any key may be prefixed %q to carry a note caf does not model",
+		ErrBadCatalog,
+		counted(len(offenders), "key", "keys"),
+		strings.Join(offenders, ", "),
+		pronoun(len(offenders)),
+		strings.Join(fieldOrder[Entry](), ", "),
+		strings.Join(fieldOrder[Healthcheck](), ", "),
+		extensionPrefix)
+}
+
+// healthcheckOffenders names the keys inside one entry's healthcheck that no
+// field of Healthcheck is called. A healthcheck that is not an object is not
+// this function's error: it is a type problem, and the decoder words it.
+func healthcheckOffenders(entry map[string]json.RawMessage, service string, known map[string]struct{}) []string {
+	raw, found := entry["healthcheck"]
+	if !found {
+		return nil
+	}
+	var check map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &check); err != nil {
+		return nil
+	}
+	offenders := make([]string, 0, 2)
+	for _, key := range sortedKeys(check) {
+		if _, isField := known[key]; isField || strings.HasPrefix(key, extensionPrefix) {
+			continue
+		}
+		offenders = append(offenders, fmt.Sprintf("%q in the healthcheck for %s", key, service))
+	}
+	return offenders
+}
+
+// fieldNames is the set of keys a struct decodes, read off the struct itself
+// rather than written down beside it.
+//
+// A list written out here would be a second copy of the shape, and the one thing
+// this whole check exists to prevent is a document and a decoder disagreeing
+// about what a field is called. A hand-written list is exactly that
+// disagreement, one release later and silent: the list would still print
+// `image` after the field was renamed, and the error would tell a developer to
+// fix a key that is already correct — the same lie this check was written to
+// stop, one layer down and wearing its clothes.
+func fieldNames[T any]() map[string]struct{} {
+	order := fieldOrder[T]()
+	names := make(map[string]struct{}, len(order))
+	for _, name := range order {
+		names[name] = struct{}{}
+	}
+	return names
+}
+
+// fieldOrder is fieldNames in the order the struct declares, which is the order
+// a reader wants them in: what a service is, what runs it, how it is reached,
+// and what it needs. A sorted set of names is alphabetical and says nothing
+// about that.
+func fieldOrder[T any]() []string {
+	shape := reflect.TypeFor[T]()
+	names := make([]string, 0, shape.NumField())
+	for i := range shape.NumField() {
+		field := shape.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		// The tag is the contract, not the Go field name: `json:"-"` is not a
+		// key the document may carry, and a name given only in the tag is the
+		// one the catalog author typed.
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		if name == "" {
+			name = field.Name
+		}
+		if name == "-" {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
+// stripExtensionKeys rebuilds the document without its `x-` keys, so that the
+// decode is not asked to accept a key this package has agreed to ignore.
+func stripExtensionKeys(services map[string]map[string]json.RawMessage) []byte {
+	for service, entry := range services {
+		for key := range entry {
+			if !strings.HasPrefix(key, extensionPrefix) {
+				continue
+			}
+			delete(entry, key)
+			services[service] = entry
+		}
+	}
+	document, err := json.Marshal(services)
+	if err != nil {
+		// Marshalling a map of raw messages back out cannot fail on anything
+		// json.Unmarshal just accepted, so this is unreachable rather than
+		// impossible. Returning the original document is the safe answer: the
+		// strict decode then refuses the extension key, which is a worse error
+		// than the right one but still an error, never a silent drop.
+		return []byte("{}")
+	}
+	return document
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// counted and pronoun are the two shapes of count agreement this file's
+// messages need, and they are separate functions because they are separate
+// grammar. A counted noun takes the number — "1 key", "3 keys". A pronoun does
+// not — "it", "them" — and routing a pronoun through a format string produces
+// `them%!(EXTRA int=3)`, which is what a single helper with a format argument
+// did here until the message was read at three typos and at one.
+//
+// The first version of this also had it the other way round, counting the
+// pronoun: "caf would have dropped 1 it". Both are sentences about nothing, and
+// they are only visible if the message is read at more than one count, which is
+// why the tests below assert on the whole sentence rather than on the key.
+func counted(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %s", n, many)
+}
+
+func pronoun(n int) string {
+	if n == 1 {
+		return "it"
+	}
+	return "them"
 }
 
 // ReadCatalogFile reads a catalog from a path. A missing file names the path

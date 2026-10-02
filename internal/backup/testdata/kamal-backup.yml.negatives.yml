@@ -1,0 +1,115 @@
+---
+# DEFECT 1 of 6 — an unknown top-level key.
+#
+# kamal-backup 0.5.2's ConfigFile::TOP_LEVEL_KEYS is a CLOSED set (app,
+# accessory, databases, paths, restore_from, restic, backup, state) and
+# `validate_top_level_key!` raises "contains unknown key" for anything else. So
+# this document is one the gem refuses at the first line of validation. caf
+# refuses it here, before anything is booted, and names the allowed set — because
+# a typo in a key is a mistake in a file, and a file mistake fixed by editing a
+# file should be reported as one.
+app: identity
+accessory: backup
+repositories: s3://typo
+databases:
+  - name: primary
+    adapter: postgres
+    url:
+      secret: DATABASE_URL
+restic:
+  repository:
+    secret: RESTIC_REPOSITORY
+---
+# DEFECT 2 of 6 — ERB in a file the gem does not render.
+#
+# This is the one that is a silent defect rather than a loud one.
+# `KamalBackup::ConfigFile#data` is `YAML.safe_load(File.read(@path))`. There is
+# no ERB in that path: unlike config/deploy.yml, which Kamal evaluates through
+# `ERB#result` before parsing, config/kamal-backup.yml is read literally by the
+# gem. So `<%= ... %>` here is not an interpolation that failed — it is a STRING.
+# `secret: <%= ENV["RESTIC_REPOSITORY"] %>` would resolve the credential to a
+# twenty-nine-character name that no accessory declares, and the deployment would
+# fail validation with a message naming a variable nobody wrote.
+#
+# caf refuses it, because the failure it prevents is a secret name that looks
+# plausible and is wrong, and the fix for that is not obvious from the message.
+app: identity
+accessory: backup
+databases:
+  - name: primary
+    adapter: postgres
+    url:
+      secret: <%= ENV["DATABASE_URL"] %>
+restic:
+  repository:
+    secret: <%= ENV["RESTIC_REPOSITORY"] %>
+  password:
+    secret: RESTIC_PASSWORD
+---
+# DEFECT 3 of 6 — no `accessory:`, so nothing is told to read this file.
+app: identity
+databases:
+  - name: primary
+    adapter: postgres
+    url:
+      secret: DATABASE_URL
+restic:
+  repository:
+    secret: RESTIC_REPOSITORY
+---
+# DEFECT 4 of 6 — no `secret:` anywhere, so every contract check below would
+# hold VACUOUSLY.
+#
+# This is the case the whole refusal design is built around: an empty secret set
+# on one side makes "every secret the backup config names is declared" true for
+# the wrong reason. A check that reads nothing and agrees with another check that
+# read nothing is how a check over nothing goes green.
+#
+# The connection and the repository are written as VALUES here, which is the only
+# way to have a document that names no credential: this is the one shape where a
+# literal rather than a `{ secret: }` is the defect. caf refuses it anyway,
+# because a backup configuration that spells a repository URL is a document whose
+# bucket name is now a fact in two places.
+app: identity
+accessory: backup
+databases:
+  - name: primary
+    adapter: postgres
+    url: postgres://identity:identity@postgres:5432/identity?sslmode=disable
+restic:
+  repository: s3:https://203.0.113.10/identity-db-backups
+---
+# DEFECT 5 of 6 — no `app:`, so nothing decides where snapshots are written.
+#
+# restic tracks by path, so this is the failure that does not fail loudly:
+# snapshots go under one path and are looked for under another, which reads as
+# "the backup is missing" rather than as "the config has no name".
+accessory: backup
+databases:
+  - name: primary
+    adapter: postgres
+    url:
+      secret: DATABASE_URL
+restic:
+  repository:
+    secret: RESTIC_REPOSITORY
+---
+# DEFECT 6 of 6 — an adapter the gem does not have, and a database with no name.
+#
+# `databases()` normalises the adapter and raises unless it is postgres, mysql or
+# sqlite; the `name:` is required and is the path component under
+# `databases/<app>/<name>/`. Both are refused by the gem; caf names them here so
+# the message says which of the two is wrong rather than only that something is.
+app: identity
+accessory: backup
+databases:
+  - name: primary
+    adapter: cockroach
+    url:
+      secret: DATABASE_URL
+  - adapter: postgres
+    url:
+      secret: RESTIC_REPOSITORY
+restic:
+  repository:
+    secret: RESTIC_REPOSITORY

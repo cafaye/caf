@@ -1,0 +1,49 @@
+---
+:roles:
+- web
+:hosts:
+- 203.0.113.10
+:primary_host: 203.0.113.10
+:version: 483d5ce576a371e9cbad9aa6d4c8d55efdf99d7d
+:repository: ghcr.io/cafaye/identity
+:absolute_image: ghcr.io/cafaye/identity:483d5ce576a371e9cbad9aa6d4c8d55efdf99d7d
+:service_with_version: identity-483d5ce576a371e9cbad9aa6d4c8d55efdf99d7d
+:volume_args: []
+:ssh_options:
+  :user: root
+  :port: 22
+  :keepalive: true
+  :keepalive_interval: 30
+  :log_level: :fatal
+:sshkit: {}
+:builder:
+  arch: arm64
+  cache:
+    type: registry
+    options: mode=max,image-manifest=true,oci-mediatypes=true
+:accessories:
+  postgres:
+    image: postgres:17-alpine
+    host: 203.0.113.10
+    port: 5432
+    volumes:
+    - identity_postgres:/var/lib/postgresql
+    env:
+      secret:
+      - POSTGRES_PASSWORD
+  backup:
+    image: ghcr.io/crmne/kamal-backup:0.5.2
+    host: 203.0.113.10
+    env:
+      secret:
+      - DATABASE_URL
+      - DATABASE_PASSWORD
+      - RESTIC_REPOSITORY
+      - RESTIC_PASSWORD
+      - AWS_ACCESS_KEY_ID
+      - AWS_SECRET_ACCESS_KEY
+    volumes:
+    - identity_backup_state:/var/lib/kamal-backup
+:logging:
+- "--log-opt"
+- max-size="10m"

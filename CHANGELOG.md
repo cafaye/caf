@@ -8,6 +8,55 @@ All notable changes to caf are recorded here. The format follows
 
 ### Added
 
+- **`caf backup <service>` — take one real backup and prove it restores.** A
+  backup that has never been drilled is not a backup:
+  `config/kamal-backup.yml` is a *specification* until the accessory that runs
+  it is booted, and a specification has never restored anything. So this
+  command boots the accessory, takes one real snapshot through kamal-backup
+  into the service's own restic repository, restores it into a scratch
+  database, asserts the tables you name hold rows, and drops the scratch
+  database **on every path, including the failing one**.
+
+  It checks the two files agree **before it boots anything** — the accessory
+  exists, it mounts that configuration read-only, every secret the backup
+  configuration names is declared by the accessory's `env.secret`, and `app:`
+  is the service — and refuses with a machine-matchable `caf-backup/…` reason
+  each time. A pair whose accessory does not exist is a pair nothing will ever
+  validate, because the container that would have validated it is the thing
+  that is missing, so the check is not only cheaper there, it is the only place
+  the question can be answered with evidence.
+
+  Two things it deliberately does **not** own. The refusal of a
+  production-looking scratch database is **kamal-backup's**, and caf hands it
+  the name and reports the gem's own words: a second copy of a rule about
+  which database gets dropped is a second opinion about the one thing that
+  must not be in doubt. And the shell caf says to the accessory — splitting
+  `DATABASE_URL` into `PG*`, because `ps` shows argv to every user on the
+  machine, and building a check whose exit status *is* the assertion, because
+  `SELECT count(*)` exits 0 on an empty table — is **cafaye/kit's
+  `templates/kamal/drill.sh`**, attributed as such in the code. caf runs the
+  same gem command without `--interactive`, because `--interactive` shells out
+  to the system `ssh` for a pty caf cannot give.
+
+  **One bounded retry exists because a race was measured, not imagined.**
+  Booting a backup accessory starts its scheduler and the scheduler's first
+  cycle takes the restic lock, so the snapshot can collide with a cycle the
+  boot itself caused; restic answers exit 11, and kamal-backup then reports it
+  as a failed `restic init` whose error says `config file already exists`.
+  The retry is conditioned on **the failing command's own transcript** rather
+  than on a second reading of the lock, because a small database's first cycle
+  finishes before a re-reading can see it — measured, and the re-reading said
+  free, said free again, and the command gave up on a snapshot the accessory
+  had taken for itself. The exit-code taxonomy (0/10/11/12) is measured in
+  `internal/backup/script.go`, so a wrong password fails once with the gem's
+  own cause rather than being retried until the budget and reported as a lock.
+
+  Three live tests prove the cycle, the broken-pair refusal and the gem's own
+  production-name refusal against a real accessory over real SSH.
+  `REPORT-caf-22-backup.md` has the output, and §10 there lists what was NOT
+  done: no TLS, no multi-host, and **no real R2** — the rehearsal uses restic's
+  local backend, which is a real repository and not an object store.
+
 - **`LICENSE`: caf is MIT.** The repository shipped no licence file, which is
   not "unlicensed, therefore free" — it is **all rights reserved**, the default
   copyright position when a public repository grants nothing. caf is the tool
@@ -56,13 +105,13 @@ All notable changes to caf are recorded here. The format follows
   verbose output verbatim, so a second run on an unchanged tree reports the same
   numbers, and adding `-count=1` would change what a green `bin/prime` means.
 
-- **`bin/prime --live`**, which sets `CAF_LIVE_DOCKER=1` and `CAF_LIVE_RYUK=1`
-  and runs the two live tests instead of skipping them. It is a second mode and
-  not the declared gate, and the three measured reasons are in the file's own
-  header. What it buys is the one thing the fast gate cannot: it **exits nonzero
-  if the live tier did not execute**, so "a demonstration that did not happen"
-  is a red rather than a green badge. That is asserted by the self-test below, by
-  running the real gate on a `PATH` with no container runtime on it.
+- **`bin/prime --live`**, which sets `CAF_LIVE_DOCKER=1`, `CAF_LIVE_RYUK=1` and
+  `CAF_LIVE_KAMAL=1` and runs the seven live tests instead of skipping them. It is
+  a second mode and not the declared gate, and the three measured reasons are in
+  the file's own header. What it buys is the one thing the fast gate cannot: it
+  **exits nonzero if the live tier did not execute**, so "a demonstration that did
+  not happen" is a red rather than a green badge. That is asserted by the self-test
+  below, by running the real gate on a `PATH` with no container runtime on it.
 
 - **`tests/gate-declaration-self-test.sh`**, the control over the control. It
   copies this repository's declaration, breaks exactly one thing at a time, and

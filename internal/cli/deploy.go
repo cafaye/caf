@@ -1,13 +1,10 @@
 package cli
 
 import (
-	"bufio"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"os"
-	"strings"
 
 	"github.com/cafaye/caf/internal/deploy"
 )
@@ -193,50 +190,7 @@ func (r deployRun) ask() (bool, error) {
 	return r.deps.confirm(fmt.Sprintf("caf deploy: deploy %s to %s? [y/N] ", r.service, where))
 }
 
-// confirmOnStdin reads one line from the process's own input.
-//
-// A closed or empty stdin answers "no" rather than blocking: a deploy in a CI
-// job with no terminal and no --yes must fail with a sentence saying which flag
-// is missing, and must not sit there holding a lock. The error it returns is the
-// instruction.
-func confirmOnStdin(prompt string) (bool, error) {
-	if prompt == "" {
-		return false, errNoPrompt
-	}
-	fmt.Fprint(os.Stderr, prompt)
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-	if err != nil && line == "" {
-		return false, fmt.Errorf("caf deploy: no answer on stdin, so nothing was deployed.\n"+
-			"  Pass --yes to deploy without asking, or --dry-run to see the plan and change nothing: %w",
-			errNoPrompt)
-	}
-	switch strings.ToLower(strings.TrimSpace(line)) {
-	case "y", "yes":
-		return true, nil
-	default:
-		return false, nil
-	}
-}
-
-// out and errOut default to a discarded stream, so a run built by a test with
-// only its options writes somewhere rather than dereferencing a nil writer. A nil
-// io.Writer in fmt.Fprintf is a panic, and a panic in a report is the worst
-// possible outcome for a command whose job is to report.
-func (r deployRun) out() io.Writer {
-	if r.env == nil || r.env.Stdout == nil {
-		return io.Discard
-	}
-	return r.env.Stdout
-}
-
-func (r deployRun) errOut() io.Writer {
-	if r.env == nil || r.env.Stderr == nil {
-		return io.Discard
-	}
-	return r.env.Stderr
-}
-
-// errNoPrompt is the sentinel for "there was nobody to ask". It is a sentinel so
-// a test can assert the refusal without matching prose, and so the same condition
-// is one value rather than three messages that drift apart.
-var errNoPrompt = errors.New("no terminal to confirm on")
+// out and errOut are the shared ones from confirm.go, so a nil writer is handled
+// in one place for both commands that report.
+func (r deployRun) out() io.Writer    { return outOrDiscard(r.env) }
+func (r deployRun) errOut() io.Writer { return errOrDiscard(r.env) }

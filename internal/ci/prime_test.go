@@ -418,7 +418,7 @@ type declaration struct {
 // expectedSkips is how many top-level tests the declared gate expects NOT to
 // run, and it is the entire margin the ratchet allows.
 //
-// The five, all measured on this tree, all accounted for in `bin/prime`'s own
+// The eight, all measured on this tree, all accounted for in `bin/prime`'s own
 // accounting section, and all structural rather than machine-dependent:
 //
 //	TestTheSilentCollisionIsReal             live tier, gated on CAF_LIVE_DOCKER
@@ -430,6 +430,18 @@ type declaration struct {
 //	TestADeployRefusesAReleaseThatNeverGoesHealthy  same tier; the health gate
 //	                                        refuses a release and the last good
 //	                                        one keeps serving
+//	TestABackupIsTakenAndItRestores           live tier, gated on CAF_LIVE_KAMAL;
+//	                                        takes a real snapshot through
+//	                                        kamal-backup and restores it into
+//	                                        a scratch database
+//	TestABrokenPairIsRefusedBeforeAnythingIsBooted  same tier; a cross-file
+//	                                        contract broken by one removed
+//	                                        `env.secret` entry is refused
+//	                                        before the accessory is booted
+//	TestAProductionLookingScratchDatabaseIsRefusedByTheGemAndStillCleanedUp
+//	                                        same tier; the refusal is the GEM's
+//	                                        and the scratch database is dropped
+//	                                        anyway
 //	TestHolderChildReservesAndExits           re-exec'd by its parent; in the
 //	                                        parent run it skips with "not the
 //	                                        child run" and passes inside the
@@ -447,10 +459,10 @@ type declaration struct {
 // A test that cannot go red is not a test, and this one had never been observed
 // red.
 //
-// The five above are not machine-capability skips. They skip in every run of
+// The eight above are not machine-capability skips. They skip in every run of
 // the declared gate, on every machine, by construction. That is the
 // distinction this constant draws.
-const expectedSkips = 5
+const expectedSkips = 8
 
 // suiteProofID is the proof whose `minimum` is the suite's floor. Named in one
 // place so renaming it in gate.yml is a one-line change here that fails loudly,

@@ -210,7 +210,22 @@ gate:
       # proves caf's own `childStatus` still does. Fixing the first by deleting
       # the pass-through branch would sail past both unless the second were
       # there, which is why `caf env up`'s status is a floor and not a detail.
-      minimum: 605
+      #
+      # caf-contract-01 added 33, all in `internal/contract` and `internal/cli`,
+      # and moved this floor to 638: 646 declared, 8 skips, so 638 run. The skip
+      # count did NOT move, for the same reason as caf-30's seven: nothing here
+      # is env-gated, so no new test arrived as a new tier. They are the tier
+      # table's ten rows, the classifier's changes, the numeric lints' shapes and
+      # the stability gate — and the subtest floor below is what notices the
+      # difference between a new test and a new `t.Run` inside an existing one.
+      #
+      # MEASURED TWICE, because it was wrong twice first: at 637 against a tree
+      # declaring 646, which failed `TestTheGateFloorIsNotBelowTheSuiteCafClaims-
+      # ToHave` in exactly the way it is supposed to. That is the ratchet working
+      # and not a problem with it — the number was taken from an earlier state of
+      # the tree, and the tree moved because three more tests landed in the same
+      # commit.
+      minimum: 638
     - id: subtests
       match: '^caf: [0-9]+ packages, [0-9]+ top-level passes, ([0-9]+) subtest passes, 0 failures, [0-9]+ skips$'
       # 537, measured, and it is a different detector from the one above.
@@ -239,7 +254,30 @@ gate:
       # rows because the message was wrong at BOTH of them — "dropped 1 it", and
       # then "dropped them%!(EXTRA int=3)" — and a defect that only appears at
       # one value of a parameter is a defect a single-case test cannot see.
-      minimum: 654
+      #
+      # 760, which is 654 plus the 106 subtests caf-contract-01's tables added,
+      # and the shape of this packet is why that number is so much larger than
+      # the suite floor's 32. Nearly everything here is a TABLE and almost nothing
+      # is a function: the tier derivation is ten rows, the classifier is thirteen
+      # rows, the numeric lints are eighteen, the stability gate is seven and the
+      # tier-selection flag is eleven. That is the packet's argument in its
+      # structure — a rule with a tier is a row somebody has to check by reading
+      # rather than a number somebody has to trust — and it is also why the suite
+      # floor alone would have been nearly blind to this packet: 107 rows spread
+      # across 33 tests is the case this floor exists for.
+      #
+      # MEASURED AS 761, and set one lower on purpose, which is the one place in
+      # this file that is not a measurement. It was first written as 760 from a
+      # run reporting 760; three later runs of the same tree all reported 761. The
+      # difference is `internal/ci`'s reachability checks over the `//go:build`
+      # surface, whose subtest count depends on what is reachable for the platform
+      # being built — and this file is read on more than one. Setting the floor
+      # one below the measurement is safe in the direction that matters: a subtest
+      # floor of N still detects a suite that shrank when it is set to N-1, and a
+      # run reporting MORE than the floor passes. A floor that has to be exactly
+      # right to avoid flaking is a flake generator, which is the mistake
+      # `timeoutSeconds` above this section exists to avoid.
+      minimum: 760
     #
     # THE ONE WITH NO FLOOR, and the schema sanctions that: a `minimum` is
     # omitted "for a proof that reports nothing countable (a step that must

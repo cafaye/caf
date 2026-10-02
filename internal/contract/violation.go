@@ -35,6 +35,21 @@ const (
 	// RuleDeclaresSurface is "a declared contract surface is a real one"
 	// (rule 3, the half of it that can be decided from the manifest).
 	RuleDeclaresSurface = RuleConventionPrefix + "declares-surface"
+
+	// RuleAPIDocumentMissing is the decidable rest of core's openapi-conventions
+	// versioning rule: a manifest that names an OpenAPI document names one that
+	// exists. Every downstream reader resolves that same path — `caf gen`, the
+	// contract tests, pantry — and a path that resolves to nothing is a contract
+	// surface that is declared and not there, which is the failure mode core's
+	// rule 3 exists to prevent and the one this package could not otherwise see.
+	RuleAPIDocumentMissing = RuleConventionPrefix + "api-document-missing"
+
+	// RuleStableDependsOnAlpha is the stability gate: a stable service may not
+	// depend on an alpha contract. It is the rule a version in a path is FOR —
+	// buf's `PACKAGE_VERSION` stability levels exist to let a young package build
+	// on a settled one without letting a settled package quietly build on a young
+	// one.
+	RuleStableDependsOnAlpha = RuleConventionPrefix + "stable-depends-on-alpha"
 )
 
 // Violation is one reason a manifest is not acceptable. Exactly one of these

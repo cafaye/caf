@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/telemetry/otel-endpoint.schema.json",
+  "title": "cafaye OTLP endpoint contract",
+  "description": "How a service is pointed at a telemetry backend, and what happens when it is pointed at nothing. PLAN.md §7b: `*_OTEL_ENDPOINT` is the contract, the shipped collector is only the default value of that variable, and unsetting it must be a genuinely free no-op — no buffering, no retry loop against a dead endpoint, no warning spam. This schema is that claim made checkable. It does not accept the word 'disabled'; it accepts a declaration of what does NOT happen, with `buffering`, `retry`, `warnings` and `startupCost` each pinned to `none`. A disabled exporter that buffers is an outage with extra steps, and one that retries against a dead endpoint is a background thread burning a core for the life of the process. The no-op is implemented by the OpenTelemetry SDK's own switch, `OTEL_SDK_DISABLED=true`, rather than by a cafaye mechanism invented here: re-implementing 'disabled' in six languages is how six services acquire six different definitions of it, and the difference between them is somebody's production incident. The per-signal `OTEL_TRACES_EXPORTER=none` family is the finer-grained half. A self-hoster who already runs Datadog, Honeycomb or Grafana Cloud sets the variable and the shipped stack goes quiet; that is a supported deployment, not a degraded mode, and it is why `required` is false and the collector address is a `default` rather than a constant. See docs/observability.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["service", "signals", "endpoint", "noOp", "disabledBy"],
+  "properties": {
+    "service": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 40,
+      "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$",
+      "description": "The service this declaration describes, equal to `name` in its cafaye.yml. The endpoint variable is derived from it, so two services cannot disagree about the name of the variable that points at them."
+    },
+    "signals": {
+      "type": "array",
+      "items": { "enum": ["traces", "metrics", "logs"] },
+      "minItems": 1,
+      "uniqueItems": true,
+      "description": "Which signals this service exports. All three are in scope for a service; a subset is for a component. Every signal listed must also appear in `disabledBy`, because a no-op that only covers traces is a service that still phones home for metrics — the failure that gets discovered by a customer's invoice rather than by a test."
+    },
+    "endpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["variable", "default", "required"],
+      "description": "Where OTLP goes, and the fact that going nowhere is a legal state.",
+      "properties": {
+        "variable": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9]*_OTEL_ENDPOINT$",
+          "description": "The ONLY contract. `<SERVICE>_OTEL_ENDPOINT` — uppercase, one name across all six languages, derived from the service name so it is knowable without reading the code. A service-specific variable is what lets a self-hoster point one service at their existing backend and leave the rest on the collector, which is the whole escape hatch."
+        },
+        "default": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https?://",
+          "description": "The shipped collector's address — a DEFAULT VALUE, not a constant, and the reason observability is on by default without being mandatory. Changing this field changes where a developer with no configuration sends their traces, which is the point: they see real traces without turning anything on. A self-hoster overrides it with the variable, or unsets it for a genuine no-op."
+        },
+        "required": {
+          "const": false,
+          "description": "Never required. This is the field that separates 'on by default' from 'mandatory', and it is a `const` so a service cannot declare the endpoint required and turn a default into an obligation — which would be a self-hoster being told to run four more services before their own code starts."
+        },
+        "protocol": {
+          "enum": ["grpc", "http/protobuf"],
+          "description": "The OTLP transport. gRPC is the default and is what the collector's 4317 port speaks; http/protobuf is for a backend that only exposes 4318."
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 30000,
+          "description": "The export timeout. A telemetry export that can block a request is a latency bug in production caused by an observability tool, which is the worst possible source of one. The OTel default is 30000; a service that lowers it is protecting its request path, not degrading its telemetry."
+        }
+      }
+    },
+    "noOp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["implementedBy", "buffering", "retry", "warnings", "startupCost"],
+      "description": "What happens when the endpoint is unset, stated as four negative properties. This is the shape of the assertion deliberately: a schema cannot prove a service's no-op path is free at runtime, but it can refuse to accept a declaration that admits buffering, retrying, warning or a dial, and it can pin the mechanism so the definition of 'disabled' is the OTel spec's rather than six services'.",
+      "properties": {
+        "implementedBy": {
+          "const": "OTEL_SDK_DISABLED",
+          "description": "The OTel spec's own kill switch. `OTEL_SDK_DISABLED=true` means a no-op SDK for all signals. Using it is what makes the no-op genuinely free in six languages, and it means a service that sets it gets the spec's behaviour rather than a cafaye reimplementation of it."
+        },
+        "buffering": {
+          "const": "none",
+          "description": "No queue, no ring buffer, no pending batch. A disabled exporter that accepts a span and holds it is a memory leak with a telemetry-shaped trigger: a request that succeeds with unbounded retained spans in the heap."
+        },
+        "retry": {
+          "const": "none",
+          "description": "No retry loop against a dead endpoint. A retry loop against an endpoint that is not there is a thread waking on a timer for the life of the process, and it is invisible in every dashboard because nothing is being recorded."
+        },
+        "warnings": {
+          "const": "none",
+          "description": "No warning spam. A service that logs a warning per export attempt fills its own log store with the fact that telemetry is off, which is how a self-hoster discovers that turning telemetry off is not supported — the opposite of the intent. The OTel SDK's own contract for an unset variable is silence, and that is the contract."
+        },
+        "startupCost": {
+          "const": "none",
+          "description": "No dial on boot. A service that opens a connection before anyone has configured a collector is a service whose availability now depends on a component that ships with the product rather than with the deployment."
+        }
+      }
+    },
+    "disabledBy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["global", "traces", "metrics", "logs"],
+      "description": "The documented switches, one per signal plus the global one. Keyed by signal rather than a list, because the failing shape is a service that documents a switch for traces and forgets logs — a flat list cannot express which signal a switch turns off, and a no-op that only covers traces is a service that still phones home for metrics, which is the failure discovered by a customer's invoice rather than by a test. `required` on all four is the floor. Unsetting `<SERVICE>_OTEL_ENDPOINT` is the documented path; these are how the OTel SDKs themselves are told, and a service that honours the standard variables works with any standard OTel tooling and no cafaye-specific configuration.",
+      "properties": {
+        "global": { "const": "OTEL_SDK_DISABLED", "description": "Turns off every signal at once. The OTel spec's own kill switch, and the one the no-op path is implemented with." },
+        "traces": { "const": "OTEL_TRACES_EXPORTER", "description": "Set to `none` for this service." },
+        "metrics": { "const": "OTEL_METRICS_EXPORTER", "description": "Set to `none` for this service." },
+        "logs": { "const": "OTEL_LOGS_EXPORTER", "description": "Set to `none` for this service." }
+      }
+    },
+    "resourceAttributes": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1,
+      "uniqueItems": true,
+      "description": "The resource attributes the service attaches to every export. At minimum `service.name`, which is what makes a span attributable to a service in a backend that has never heard of cafaye."
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 400,
+      "description": "One line on anything a reader of the numbers would otherwise have to go and find out — a backend that only speaks one protocol, a signal a component does not emit yet, a known gap."
+    }
+  }
+}

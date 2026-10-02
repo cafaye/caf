@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/telemetry/span-naming.schema.json",
+  "title": "cafaye span name",
+  "description": "How a cafaye span is named. One scheme, all six languages, no exceptions. The scheme is `<service>.<operation>[.<target>]` — a service name, then one to three lowercase snake_case words, dotted. The prefix is mandatory and is the emitting service's own `name`, so a span aggregates fleet-wide without a join, and a span name never leaves a reader guessing which service produced it. This is the same rule as the event grammar's `<service>.<entity>.<action>` and it is the same rule for the same reason. The pattern is duplicated byte-identically in traces.schema.json, which tests/test_specs.py asserts. What goes in the NAME is the operation, low-cardinality by construction; what goes in an ATTRIBUTE is everything else, including the route template, the status and the identity. The two are not interchangeable and the whole point of stating the grammar is that they are not. See docs/observability.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "service"],
+  "properties": {
+    "name": {
+      "$ref": "#/$defs/spanName",
+      "description": "The span name exactly as it is exported. `muse.provider.call`, not `muse.provider.call.usr_01J9Z8QK5M4N7P2R3T6V8W9X0A` and not `get_user`."
+    },
+    "service": {
+      "$ref": "#/$defs/serviceName",
+      "description": "The emitting service, equal to `name` in its cafaye.yml and to the first segment of the span name. Cross-checked by tests/test_specs.py; asserted here so a declaration that names one service and prefixes another cannot validate."
+    },
+    "operation": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$",
+      "description": "The operation, repeated from `name` so a linter can index on it and a reader can see the field that matters. A verb or a noun-phrase in snake_case, never a value: `route`, `provider_call`, `deliver`."
+    },
+    "target": {
+      "type": ["string", "null"],
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$",
+      "description": "Optional third segment, present only when the operation alone is ambiguous across the fleet — `muse.provider.call` rather than a `muse.call` that could be an HTTP call or an event publish. A target is a class of thing (`provider`, `db`, `queue`), never an instance of one."
+    },
+    "kind": {
+      "enum": ["internal", "server", "client", "producer", "consumer"],
+      "description": "The OpenTelemetry span kind. Recorded here because it is a property of the span, not part of its name: two spans with the same name and different kinds are different work, and the name stays the same. This is the name/attribute distinction the schema exists to draw."
+    },
+    "attributes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true,
+      "description": "Every attribute name this span is permitted to carry, each of which must also appear in the traces allowlist in traces.schema.json. The union across a service's spans is what a per-service allowlist is; this field is the per-span subset, so a span cannot be given an attribute merely because some other span in the same service uses it."
+    }
+  },
+  "$defs": {
+    "spanName": {
+      "type": "string",
+      "description": "`<service>.<operation>[.<target>[.<qualifier>]]` — two to four dot-separated segments. The first is a cafaye service name (kebab-case, so it may contain a dash but no underscores); the rest are lowercase words, optionally with internal underscores. LOW CARDINALITY BY CONSTRUCTION, which is the property the pattern exists to guarantee: a segment is at most fifteen characters, so no segment can hold an identifier, a trace id, a ULID, a URL or a path. That length bound is doing the work — `muse.user.usr_01J9Z8QK5M4N7P2R3T6V8W9X0A` is rejected not because the grammar knows about cafaye id formats but because no legal segment is 26 characters long. See docs/observability.md.",
+      "minLength": 4,
+      "maxLength": 120,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?:\\.[a-z][a-z0-9]{0,14}(?:_[a-z0-9]{0,14}){0,2}){1,3}$"
+    },
+    "serviceName": {
+      "type": "string",
+      "description": "cafaye namespace rule, byte-identical to the same pattern in cafaye.manifest.schema.json, event-envelope.schema.json and fleet.schema.json. Change one, change all four; tests/test_specs.py asserts the copies match.",
+      "minLength": 2,
+      "maxLength": 40,
+      "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$"
+    }
+  }
+}

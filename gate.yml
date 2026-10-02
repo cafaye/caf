@@ -219,32 +219,40 @@ gate:
       # the pass-through branch would sail past both unless the second were
       # there, which is why `caf env up`'s status is a floor and not a detail.
       #
-      # caf-gen-01 added 50, in `internal/gen`, `internal/contract` and
-      # `internal/cli`, and moved this floor to 643: 651 declared, 8 skips, so 643
-      # run. `expectedSkips` stays at 8 for the same reason every packet since
-      # caf-29 gives: none of the fifty is env-gated, so no new test arrived as a
-      # new tier.
+      # caf-gen-01 added 38, in `internal/gen` (18, a new package), `internal/contract`
+      # (12) and `internal/cli` (8), and moved this floor to 643: 651 declared, 8
+      # skips, so 643 run. `expectedSkips` stays at 8 for the same reason every
+      # packet since caf-29 gives: none of the thirty-eight is env-gated, so no new
+      # test arrived as a new tier.
       #
-      # Most of the fifty are in `internal/gen`, and the number is the point of
-      # the packet rather than a side effect of it. `caf gen telemetry` emits the
-      # OpenTelemetry setup a service needs to honour core's telemetry contract,
-      # and a generator whose output nobody checks is a generator whose idea of
-      # correct is whatever it happens to do — so the fifty are mostly the two
-      # directions that matter: every value read out of core reaches the emitted
-      # bytes, and two runs over one manifest produce identical bytes. The
-      # emitted `otel-endpoint.json` is additionally handed to core's own
-      # vendored schema before it is written, which is the one check that cannot
-      # share the generator's blind spot.
+      # Most of them are in `internal/gen`, and the number is the point of the packet
+      # rather than a side effect of it. `caf gen telemetry` emits the OpenTelemetry
+      # setup a service needs to honour core's telemetry contract, and a generator
+      # whose output nobody checks is a generator whose idea of correct is whatever
+      # it happens to do — so the eighteen are mostly the two directions that matter:
+      # every value read out of core reaches the emitted bytes, and two runs over one
+      # manifest produce identical bytes. The emitted `otel-endpoint.json` is
+      # additionally handed to core's own vendored schema before it is written, which
+      # is the one check that cannot share the generator's blind spot, and the
+      # negative half of that is asserted too — a validation that only ever sees
+      # documents it agrees with has proved nothing.
       #
-      # The floor is 643 and NOT the 655 measured mid-packet, and the reason is
-      # this packet's own drift gate. `internal/gen/testdata/` holds a golden
-      # `telemetry_test.go` that declares twelve top-level tests; `go test` runs
-      # none of them, because `testdata` is excluded from every package, but a
-      # naive walk of the tree counts them. `internal/ci`'s walker excludes
-      # `testdata` for that reason — so a first measurement taken while the
-      # golden was being written came out twelve high, and pinning 655 would have
-      # been `TestTheGateFloorIsNotAWall` going red on a gate that is otherwise
-      # green. The ratchet caught the bad number rather than the missing floor.
+      # 651 DECLARED IS A NUMBER THIS PACKET HAD TO FIX ITS OWN WALKER TO REACH, and
+      # the wrong number was the interesting one. `internal/ci` counts
+      # `func TestX(t *testing.T)` over the tree; this packet puts the drift gate's
+      # goldens in `internal/gen/testdata/` as real Go files, the golden
+      # `telemetry_test.go` declares twelve top-level tests, and `go test` runs none
+      # of them because the go toolchain excludes `testdata` from every package.
+      #
+      # So the walker said 663 and the gate reported 650, and the ratchet named
+      # twenty-one skips where `expectedSkips` says eight. Twenty-one is a number
+      # nobody can account for, which is the whole reason this ratchet exists: it
+      # caught a defect in the check rather than a missing floor. The fix went into
+      # `internal/ci`'s notion of what a test is — `testdata` is now excluded like
+      # `.git` and `vendor` — and NOT into `expectedSkips`, because raising the floor
+      # to match a count that includes tests `go test` never runs is precisely the
+      # "edit the assertion to make it green" that this test's own comment forbids,
+      # and it would have left a floor no run of any gate could satisfy.
       minimum: 643
     - id: subtests
       match: '^caf: [0-9]+ packages, [0-9]+ top-level passes, ([0-9]+) subtest passes, 0 failures, [0-9]+ skips$'

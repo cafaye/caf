@@ -79,13 +79,24 @@ USAGE
 # because it is a separate claim: that a release which never goes healthy is
 # refused AND the release already serving keeps serving. Zero downtime is the
 # thing being bought, and it is worth its own name in the count.
-LIVE_TESTS='TestTheSilentCollisionIsReal|TestAClosedLeaseReapsAndAnOpenOneDoesNot|TestADeployReachesAServerAndAnswers|TestADeployRefusesAReleaseThatNeverGoesHealthy'
+#
+# The backup one is the fourth kind, and it is the only test in this repository
+# that takes a real snapshot and restores it: it builds an SSH host, boots
+# kamal-backup's own accessory through `kamal accessory boot all`, streams a
+# real pg_dump into a real restic repository, restores that snapshot into a
+# scratch database and asserts the rows came back. Its three names are three
+# claims rather than one: that the cycle works, that a broken cross-file contract
+# is refused before anything is booted, and that the refusal about a
+# production-looking scratch database is the GEM's and not caf's. The third is
+# in the tier precisely because it is the claim that a copy of somebody else's
+# rule would also pass, and only running the real gem settles it.
+LIVE_TESTS='TestTheSilentCollisionIsReal|TestAClosedLeaseReapsAndAnOpenOneDoesNot|TestADeployReachesAServerAndAnswers|TestADeployRefusesAReleaseThatNeverGoesHealthy|TestABackupIsTakenAndItRestores|TestABrokenPairIsRefusedBeforeAnythingIsBooted|TestAProductionLookingScratchDatabaseIsRefusedByTheGemAndStillCleanedUp'
 
 # The size of the tier, written down rather than computed, because it is the
 # number `gate.yml`'s `live-tier` proof matches and because a count derived
 # from the same text it is checked against would prove nothing. internal/ci
 # asserts it against the tree.
-LIVE_TIER=4
+LIVE_TIER=7
 
 live=0
 while [ "$#" -gt 0 ]; do

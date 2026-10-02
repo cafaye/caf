@@ -16,6 +16,7 @@ shared CI and lint configuration comes from `cafaye/kit` — neither lives here.
 cmd/caf/main.go     thin entrypoint: build a cli.Options, exit with its code
 internal/cli/       router, registry, one file per subcommand
 internal/contract/  the core contract: manifests, the vendored schema, versions
+internal/backup/    caf backup: the cross-file contract, the plan, the cycle
 internal/dev/       the local stack: the planner, the renderer, two seams
 internal/mcp/       the MCP server: transports, the served table, the SDK seam
 internal/ledger/    the reclamation ledger: what caf created, so cleanup is not memory
@@ -68,6 +69,25 @@ contract needs so that `init`, `gen` and `deploy` do not each grow their own:
 - `conventions.go` — the rules the schema cannot state.
 - `lint.go` — the walk, one finding per manifest.
 - `version.go` — the constraint grammar and the resolver.
+
+`internal/backup` is `caf backup`, split the same way, and it exists so that a
+second command that needs to know what a backup is does not grow its own:
+
+- `doc.go` — what a backup cycle is, and every measured thing this package
+  knows about kamal, kamal-backup and restic.
+- `config.go` — `config/kamal-backup.yml`, read into the few facts a plan
+  needs. Identity's real file is the fixture, sha-pinned.
+- `contract.go` — the four reasons the two files can disagree, and the gate
+  that checks them BEFORE anything is booted.
+- `plan.go` — the eight steps, in order, with the reason each is in the plan
+  and which one may be retried.
+- `script.go` — every line caf says to the shell inside the accessory, and
+  the escaping that makes one line survive two shells.
+- `project.go` — reading a project directory the way `deploy` does.
+- `run.go` — the cycle, the restic-lock wait, and the reports.
+- `runner.go` — the `Runner` interface, and nothing else. It is declared here
+  and satisfied by `deploy.KamalRunner` in `internal/cli`, so this package
+  imports neither `deploy` nor `cli` and either can be read on its own.
 
 ## Rules
 
@@ -249,6 +269,27 @@ and then captures *all* the traffic (40 of 40 connections landed on the socket
 bound last, measured), so a successful bind identifies nothing and the failure
 presents as an unreachable service rather than a busy port.
 
+**A retry is conditioned on the cause, read at the moment it happened.** The one
+step in `internal/backup` that may be retried is the snapshot, because booting the
+backup accessory starts its scheduler and the scheduler's first cycle takes the restic
+repository lock — measured, and restic answers a collision with exit 11 while
+kamal-backup reports it as a failure to `restic init`, so the error line an operator
+reads names a repository that is in fact already there. Two rules, and the second one
+is the one that was got wrong first:
+
+- **The evidence is the failing command's own transcript.** Re-asking the world is a
+  *sample*, and the thing being asked about may have changed: measured, the lock was
+  reported free, the very next command came back exit 11, and by the time caf asked
+  again the cycle was done, so a retry conditioned on that second reading never fired
+  and the command gave up on a snapshot the accessory had taken for itself. The
+  transcript is the moment, not a sample of it.
+- **A cause that is not the race is returned at once.** A wrong repository password
+  (restic's 12) or a missing repository (10) fails in one attempt rather than being
+  retried until the budget and then reported as a lock, which is how a retry turns a
+  diagnosis into a hang. The exit-code taxonomy is measured in `script.go` rather than
+  taken from a manual, and the wrong-password one has its own test with the gem's own
+  transcript in it.
+
 **A sweeper names what it removes, and refuses the rest.** Every `docker` call in
 `internal/reclaim` is scoped by the compose project label, and the sweep checks
 that each name carries the ledger entry's generation before removing it. A name
@@ -274,6 +315,12 @@ failure is a graph that can fail to load at exactly the wrong moment.
 `internal/contract` has two: `github.com/goccy/go-yaml` for YAML (chosen for
 parse errors with a line and a column, and for zero dependencies) and
 `github.com/santhosh-tekuri/jsonschema/v6` for draft 2020-12 validation.
+
+`internal/backup` has one, and it is the first of those: `github.com/goccy/go-yaml`
+again, to read `config/kamal-backup.yml` and the accessory block out of the document
+`kamal config` prints. The same argument answers it — the standard library has no YAML
+parser at all, and this one reports a line and a column, which is the difference
+between "your backup configuration is wrong" and a sentence naming what is wrong.
 
 `internal/mcp` has one: `github.com/modelcontextprotocol/go-sdk`, the official
 Go SDK for the Model Context Protocol. The standard library has no JSON-RPC, no
@@ -325,7 +372,7 @@ there since `doctor`'s memory probe was written for two platforms.
 
 ```sh
 bin/prime            # go mod download && go build ./... && go test -v ./... , then say what ran
-bin/prime --live     # the same, with the two live tests running instead of skipping
+bin/prime --live     # the same, with the seven live tests running instead of skipping
 go vet ./...
 gofmt -l .           # must print nothing
 ```
@@ -348,10 +395,10 @@ repository, and they are rules rather than notes:
   shape. If you reformat them, fix `gate.yml` in the same commit.
 - **Adding a test fails the gate until `gate.yml`'s floor is raised.** That is
   `TestTheGateFloorIsNotBelowTheSuiteCafClaimsToHave`, and it is core's ratchet.
-  The identity it holds is `declared - minimum == 3` — the three are the two
-  live tests and the re-exec'd child, named at the constant. It is exact in both
-  directions, so a test that starts skipping is caught the same way. **Raise the
-  number; do not edit the assertion.**
+  The identity it holds is `declared - minimum == expectedSkips` — currently 8,
+  and the eight are the seven live tests and the re-exec'd child, named at the
+  constant. It is exact in both directions, so a test that starts skipping is
+  caught the same way. **Raise the number; do not edit the assertion.**
 - **`tests/gate-declaration-self-test.sh` is the control over the control.** It
   copies this repository's declaration, breaks exactly one thing at a time, and
   asserts core's checker goes red and *names* the finding. It is not part of
@@ -377,15 +424,16 @@ and a `--fast` flag, and each of those changes what a green `bin/prime` means.
 verbose output verbatim, so a second `bin/prime` on an unchanged tree reports the
 same numbers as the first, and the floors read the same either way.
 
-Coverage is 89.1% and the CI gate is 85% (`.github/workflows/ci.yml`). Both
+Coverage is 88.8% and the CI gate is 85% (`.github/workflows/ci.yml`). Both
 numbers move as code lands; raise the gate when the floor does, never the other
 way round.
 
 ## The live tier, and why it is not in the gate
 
-`bin/prime --live` sets `CAF_LIVE_DOCKER=1` and `CAF_LIVE_RYUK=1` and runs the
-two live tests instead of skipping them. It is a second mode and not the declared
-gate, for three measured reasons, all in `REPORT-caf-07-gate.md`:
+`bin/prime --live` sets `CAF_LIVE_DOCKER=1`, `CAF_LIVE_RYUK=1` and
+`CAF_LIVE_KAMAL=1` and runs the seven live tests instead of skipping them. It is a
+second mode and not the declared gate, for three measured reasons, all in
+`REPORT-caf-07-gate.md`:
 
 1. `TestTheSilentCollisionIsReal` asserts a blind spot of a **particular**
    container runtime. On a runtime that arbitrates properly its subtests
@@ -396,8 +444,14 @@ gate, for three measured reasons, all in `REPORT-caf-07-gate.md`:
 3. `bin/prime` must run on a bare CI runner. That has been the rule here since
    caf-06 and nothing in this packet reverses it.
 
+Reason 3 is the general one, and it is why `internal/deploy`'s two and
+`internal/backup`'s three joined the tier rather than the gate: they need `kamal` on
+PATH and a container runtime with a Docker socket the test can reach, and neither is
+something a bare runner is guaranteed to have. They are demonstrations rather than
+checks for the reason the first two are, and they take minutes.
+
 **The live tier is not silently absent, and that is what the declaration is for.**
-Every run prints `caf: live tier: 0 of 2 executed` and `gate.yml` has a
+Every run prints `caf: live tier: 0 of 7 executed` and `gate.yml` has a
 `live-tier` proof that matches it, so a run in which the tier did not execute
 says so in a line the declaration requires. Delete the line and the gate is
 red. `--live` is the mode in which it *cannot* silently not run: it exits
@@ -405,7 +459,8 @@ nonzero if the tier did not execute, and
 `tests/gate-declaration-self-test.sh` proves that by running it on a PATH with
 no container runtime on it.
 
-`internal/ports/live_test.go` and `internal/ryuk/live_test.go` stay in the tree,
+`internal/ports/live_test.go`, `internal/ryuk/live_test.go`,
+`internal/deploy/live_test.go` and `internal/backup/live_test.go` stay in the tree,
 as ordinary `go test` code, rather than as scripts in a directory nobody runs — a
 demonstration that lives outside the suite is a demonstration that rots. Each one
 carries the safety rules its own risk demands in its own comments: a scratch port

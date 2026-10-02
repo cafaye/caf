@@ -66,6 +66,7 @@ func (c *Command) Execute(env *Env, args []string) error {
 // Commands returns every subcommand, in the order `caf help` lists them.
 func Commands() []*Command {
 	return []*Command{
+		newBackupCommand(backupDeps{}),
 		newContractCommand(),
 		newDeployCommand(deployDeps{}),
 		newDevCommand(defaultDevDeps()),

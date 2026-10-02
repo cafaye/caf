@@ -81,6 +81,7 @@ a run in which they passed.
 | `caf new <name>` | scaffold a new cafaye service or app | flags only |
 | `caf dev [project]` | run the local development stack | **works** |
 | `caf deploy <service>` | deploy a service or app to the platform | **works** |
+| `caf backup <service>` | take one real backup and prove it restores, into a scratch database it then drops | **works** |
 | `caf gen <target>` | generate code and config from cafaye contracts | flags only |
 | `caf contract lint <path>` | validate `cafaye.yml` against the core schema | **works** |
 | `caf contract resolve <c> <v>` | resolve a core version constraint | **works** |
@@ -510,6 +511,134 @@ the release that never goes healthy being refused while the previous one keeps
 serving. **Read that file's header before running it on a machine that is not
 yours**: it starts an SSH daemon, publishes a port, and uses the global container
 name `kamal-docker-registry` that Kamal itself owns.
+
+## `caf backup`
+
+`caf backup` takes one real backup and then **proves it**, in one command:
+
+```sh
+caf backup <service> --table <table> [--env <env>] [--scratch <db>] --yes
+```
+
+A backup that has never been drilled is not a backup. `config/kamal-backup.yml` is a
+specification until the accessory that runs it is booted, and a specification has
+never restored anything. So this command boots the accessory, takes a real snapshot
+through kamal-backup into the service's own restic repository, restores that
+snapshot into a scratch database, asserts the tables you name hold rows, and drops
+the scratch database — **including when the drill fails**.
+
+The proof is a number, not a word. kamal-backup decides the drill passed by the exit
+status of the `--check` command, so the check has to *be* an assertion:
+
+```
+$ caf backup --table users --yes identity
+identity: backing up from config/kamal-backup.yml in ~/rehearsal with kamal 2.12.0
+  the deployment it belongs to is config/deploy.yml
+  credentials come from .kamal/secrets, by name only
+  the backup accessory runs it, and the restore is drilled into identity_drill
+  its schedule is 1d, which is a scheduled dump and not point-in-time recovery
+...
+caf backup: users holds 7 rows in identity_drill after the restore
+...
+  identity_drill is gone, whether the drill passed or not
+
+identity: the snapshot restored
+  the backup accessory is booted and the repository holds a snapshot taken during this run
+  kamal-backup restored the latest snapshot into identity_drill and ran the assertion; its exit
+  status is the verdict, and the row counts it printed are above. users held rows
+  identity_drill has been dropped, so nothing is left to restore into by accident
+  what this does NOT prove: that the schedule will take the next one. config/kamal-backup.yml sets
+  `backup.schedule`, and a scheduled dump is not point-in-time recovery — there is no WAL
+  shipping and no base backup, so a destroyed primary loses up to that interval of
+  committed transactions. The window is read from the file, not assumed here.
+  its logs: kamal accessory logs backup
+```
+
+The last paragraph is the point of the last paragraph. A drill is evidence about **one
+snapshot**; the data-loss window is the schedule in the file, and the command reads it
+rather than assuming one.
+
+### It checks the two files agree, before anything is booted
+
+`config/kamal-backup.yml` and `config/deploy.yml` are one contract. Every clause of it
+is a claim about what happens at deploy time, and a pair that is broken in a way that
+only fails then is cheapest to catch while nothing has started. caf reads Kamal's
+**own resolved config** — after the ERB is evaluated — and refuses four things:
+
+| reason | what is wrong |
+|---|---|
+| `caf-backup/accessory-not-declared` | the backup configuration names an accessory the deploy configuration does not have |
+| `caf-backup/config-not-mounted` | the accessory does not mount that backup configuration read-only |
+| `caf-backup/secret-not-declared` | the backup configuration names a secret the accessory's `env.secret` does not declare |
+| `caf-backup/app-name-mismatch` | `app:` disagrees with the service, so every snapshot is unfindable |
+
+```
+$ caf backup --table users --yes identity
+caf backup: refusing to back up
+
+caf-backup/secret-not-declared
+  the backup configuration names the secret RESTIC_REPOSITORY, and the backup accessory does not declare it.
+  kamal-backup builds that accessory's environment from that accessory's `env.secret` list and from nothing else, so this pair deploys and then fails validation with a message about RESTIC_REPOSITORY — measured on kamal-backup 0.5.2, and what the operator will actually be shown.
+  The accessory declares: DATABASE_URL, DATABASE_PASSWORD, RESTIC_PASSWORD, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+  Fix it in .../config/deploy.yml, by adding
+    RESTIC_REPOSITORY
+  to the backup accessory's env.secret list. Declaring a secret the backup configuration does not use is NOT this failure: restic reads AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY from the environment directly, and the accessory has to declare them for the repository to be reachable.
+```
+
+Exit 1, nothing booted, and **stderr stays empty** — the refusal is the report. The
+reasons are `caf-backup/…` so a script can match one instead of grepping prose.
+
+### One refusal is deliberately NOT caf's
+
+A scratch database whose name *looks* production-shaped is refused by
+**kamal-backup** (`Config#production_like_target?`), and caf hands it the name and
+reports what the gem said:
+
+```
+refusing production-looking restore target identity-postgres/caf_prod_drill; choose a scratch target that does not look like production
+```
+
+caf keeps **no copy** of that rule. A second copy of a rule about which database gets
+dropped is a second opinion about the one thing that must not be in doubt — and in
+operator form the same rule already exists in
+[cafaye/kit](https://github.com/cafaye/kit)'s `templates/kamal/drill.sh`, which is
+also where this command's `env.secret` connection preamble and its "a check must be
+an assertion, not a count" rule come from. What caf refuses itself is narrower: a name
+it cannot write down unquoted through two shells (`plainIdentifier`).
+
+### One race is measured, and the retry is conditioned on the cause
+
+Booting a backup accessory starts its scheduler, and the scheduler's **first cycle
+takes the restic repository lock**. So the snapshot this command wants can collide
+with a cycle the boot itself caused, and restic answers exit 11 — which kamal-backup
+then reports as a failure to `restic init`, so the last line an operator reads says
+`config file already exists` and the line above it says a lock was held.
+
+caf waits for the repository to be free, and if the snapshot still collides it retries
+**only while the evidence says it was a lock** — the failing command's own transcript
+first, then a fresh reading. A wrong repository password (restic's exit 12) or a
+missing repository (10) fails in one attempt instead of being retried until the
+budget, and the gem's own cause reaches the report unchanged.
+
+### `--dry-run` is at least as strict as the real run
+
+Same two read-only steps really run, same contract check against the same resolved
+document, same refusal — and every step that would change something is printed and
+not executed. `TestADryRunRefusesExactlyWhatTheRealRunRefuses` runs both paths over
+five documents and compares the reason, so a dry run more permissive than the real one
+is a red test rather than a surprise.
+
+### It has actually been run
+
+A real `pg_dump` of a real Postgres, streamed into a real restic repository by the
+real `ghcr.io/crmne/kamal-backup:0.5.2`, restored into a scratch database with seven
+rows asserted — plus the two refusals, one of them the gem's. It is
+`internal/backup/live_test.go`, it is in the **live** tier rather than the gate (it
+needs `kamal` and a container runtime), and
+[`REPORT-caf-22-backup.md`](REPORT-caf-22-backup.md) has the output. **Read that
+file's header before running it on a machine that is not yours**: it starts an SSH
+daemon, publishes a port, boots two containers against the host's Docker socket, and
+creates and drops a database.
 
 ## `caf doctor`
 
@@ -974,6 +1103,9 @@ Phase 0 (v0, now):
 - [ ] `caf contract fetch` — pull a contract from a registry
 - [x] `caf deploy` — a real Kamal 2 deploy, health-gated, with a refusal for a
       published accessory port and an honest `--dry-run`
+- [x] `caf backup` — a real kamal-backup snapshot, restored into a scratch database
+      with the rows asserted and the scratch dropped, four contract refusals before
+      any boot, and an honest `--dry-run`
 - [x] `caf mcp` — serve the cafaye tools to agents
 - [x] `caf reclaim` — the reclamation ledger, containers before volumes, tri-state
 - [x] `caf env up` — the only provisioning verb: reserve, run as the parent, reclaim

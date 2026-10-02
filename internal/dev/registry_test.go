@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -228,5 +229,253 @@ func writeFile(t *testing.T, path, contents string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// The defect this whole block exists for, reproduced rather than described.
+//
+// A catalog is the one caf input a person writes by hand, and encoding/json
+// drops a key it does not recognise without a sound. So `imag` — a typo, one
+// character from the real key — left the entry with no image, and the catalog
+// was accepted. The developer was not shown that. They were shown, three layers
+// later and from a different command, that "the local registry names no image
+// for identity": a claim about the catalog's contents, when the catalog has an
+// image in it and the document is misspelled. Sent to edit a file that was
+// already correct.
+func TestReadCatalogRefusesAMisspelledKey(t *testing.T) {
+	_, err := ReadCatalog(strings.NewReader(`{"identity": {"name": "identity", "imag": "cafaye/identity:dev", "port": 8080}}`))
+
+	if !errors.Is(err, ErrBadCatalog) {
+		t.Fatalf("err = %v, want it to wrap ErrBadCatalog", err)
+	}
+	for _, want := range []string{"imag", "identity", "image"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %q, want it to mention %q", err, want)
+		}
+	}
+}
+
+// The three things the error has to say, and the reason each is asserted
+// separately rather than as one substring: `imag` says the typo, `identity` says
+// which of the catalog's services holds it, and `image` says what the key should
+// have been. An error carrying only the first sends the reader to grep; only the
+// first two sends them to edit.
+func TestReadCatalogNamesTheServiceAndTheKeysThatWouldHaveWorked(t *testing.T) {
+	_, err := ReadCatalog(strings.NewReader(`{
+		"courier": {"name": "courier", "image": "cafaye/courier:dev"},
+		"identity": {"name": "identity", "imagee": "cafaye/identity:dev"}
+	}`))
+
+	if err == nil {
+		t.Fatal("ReadCatalog = nil error, want a failure")
+	}
+	if strings.Contains(err.Error(), "courier") {
+		t.Errorf("err = %q, want it to name identity and not the entry that is fine", err)
+	}
+	if !strings.Contains(err.Error(), "imagee") {
+		t.Errorf("err = %q, want it to name the key that is wrong", err)
+	}
+}
+
+// A catalog holding nine services has typos that come from one mistake, so it
+// reports them together. Fixing them one `caf dev` at a time is one run per
+// typo, and the second run's message is about a file the first run already said
+// was wrong.
+func TestReadCatalogReportsEveryMisspelledKeyAtOnce(t *testing.T) {
+	_, err := ReadCatalog(strings.NewReader(`{"identity": {"name": "identity", "imag": "x", "helthcheck": {"test": []}}} `))
+
+	if err == nil {
+		t.Fatal("ReadCatalog = nil error, want a failure")
+	}
+	for _, want := range []string{"imag", "helthcheck"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %q, want it to name both %q — one run should list every typo", err, want)
+		}
+	}
+	if !strings.Contains(err.Error(), "2 keys") {
+		t.Errorf("err = %q, want it to agree with its own count", err)
+	}
+}
+
+// `healthcheck` is the one struct nested inside an entry, so it is the one place
+// a typo can hide from the check over entry keys. And a typo there is worse than
+// a typo at the top: a healthcheck that lost its `retries` is a container
+// reported ready the first time it answers at all, which is the failure a
+// healthcheck exists to prevent.
+func TestReadCatalogRefusesAMisspelledHealthcheckKey(t *testing.T) {
+	_, err := ReadCatalog(strings.NewReader(
+		`{"identity": {"name": "identity", "image": "x", "healthcheck": {"test": ["CMD", "true"], "retires": 3}}}`))
+
+	if !errors.Is(err, ErrBadCatalog) {
+		t.Fatalf("err = %v, want it to wrap ErrBadCatalog", err)
+	}
+	for _, want := range []string{"retires", "healthcheck", "identity", "retries"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %q, want it to mention %q", err, want)
+		}
+	}
+}
+
+// The escape hatch, and the reason refusing unknown keys is safe to do at all.
+//
+// Without a way to say something caf does not model, "refuse what you do not
+// know" and "let the document grow" are the same decision, and the first one
+// wins by accident: the next person to add a field they need has to work around
+// caf instead of adding to it. An `x-` key is dropped on purpose, and the
+// difference between that and a typo is one prefix a human chose to type.
+func TestReadCatalogDropsAnExtensionKey(t *testing.T) {
+	catalog, err := ReadCatalog(strings.NewReader(
+		`{"identity": {"name": "identity", "image": "cafaye/identity:dev", "x-maintainer": "caf"}}`))
+
+	if err != nil {
+		t.Fatalf("ReadCatalog: %v", err)
+	}
+	entry, found := catalog.Resolve("identity")
+	if !found {
+		t.Fatal("the catalog does not hold identity")
+	}
+	if entry.Image != "cafaye/identity:dev" {
+		t.Errorf("Image = %q, want the image to survive the extension key", entry.Image)
+	}
+}
+
+// The extension prefix has to work INSIDE a healthcheck too, or the escape hatch
+// is only half an escape hatch and the next nested object needs a new rule.
+func TestReadCatalogDropsAnExtensionKeyInsideAHealthcheck(t *testing.T) {
+	catalog, err := ReadCatalog(strings.NewReader(
+		`{"identity": {"name": "identity", "image": "x", "healthcheck": {"test": ["CMD", "true"], "x-why": "copied from compose"}}}`))
+
+	if err != nil {
+		t.Fatalf("ReadCatalog: %v", err)
+	}
+	entry, _ := catalog.Resolve("identity")
+	if entry.Healthcheck == nil || len(entry.Healthcheck.Test) != 2 {
+		t.Errorf("Healthcheck = %+v, want the real fields to survive the extension key", entry.Healthcheck)
+	}
+}
+
+// The list of valid keys is read off the struct, so it cannot drift. If it were
+// written out beside the struct instead, renaming a field would leave the error
+// telling developers to fix a key that is already correct — this same lie, one
+// layer down.
+//
+// THE EXPECTATION IS WRITTEN OUT HERE, ON PURPOSE, and that is the one mirror in
+// this file. The first version of this test built its expected list by calling
+// `fieldOrder[Entry]()` — the function under test. Mutation 4 (drop `publish`
+// from the list `fieldOrder` builds) left it GREEN, because the expectation
+// shrank by exactly as much as the thing it was checking. A test that asks the
+// code what it should have said, and then compares, cannot fail.
+//
+// The prohibition is on the ERROR MESSAGE being a second copy of the shape,
+// because that copy is what a developer reads when they are already stuck. A
+// copy in a test is a different thing: it is the only thing that can notice the
+// first copy going stale, and it costs one line to update when a field is
+// renamed — which is the update the error message must never need.
+func TestTheKeyListNamesEveryFieldTheStructActuallyHas(t *testing.T) {
+	_, err := ReadCatalog(strings.NewReader(`{"identity": {"nope": 1}}`))
+	if err == nil {
+		t.Fatal("ReadCatalog = nil error, want a failure")
+	}
+
+	// Compared as whole keys, not as substrings. The first version of this test
+	// used Contains, and asserted that the list does NOT offer `env` — which
+	// `environment` contains. The assertion was red for a document with no
+	// defect in it at all, which is the cheapest kind of test to ignore: it
+	// fails, so it is obviously broken, so it gets deleted rather than fixed.
+	entryKeys := keysOffered(t, err.Error(), "An entry takes ", "; a healthcheck takes ")
+	healthKeys := keysOffered(t, err.Error(), "a healthcheck takes ", "; and any key may be prefixed")
+
+	// A key list that has drifted from the struct tells a developer to fix a
+	// key that is already correct, so both directions are checked: every field
+	// the struct has is offered, and nothing else is.
+	for _, want := range []string{"name", "image", "command", "port", "publish", "environment", "volumes", "healthcheck", "dependencies"} {
+		if !slices.Contains(entryKeys, want) {
+			t.Errorf("the entry's key list offers %v, want it to include %q — a list that has drifted from the struct sends people to edit a file that is already right", entryKeys, want)
+		}
+	}
+	if extra := len(entryKeys) - 9; extra != 0 {
+		t.Errorf("the entry's key list offers %d keys, want exactly the 9 the struct has: %v", len(entryKeys), entryKeys)
+	}
+
+	for _, want := range []string{"test", "interval", "timeout", "retries", "startPeriod"} {
+		if !slices.Contains(healthKeys, want) {
+			t.Errorf("the healthcheck's key list offers %v, want it to include %q", healthKeys, want)
+		}
+	}
+	if extra := len(healthKeys) - 5; extra != 0 {
+		t.Errorf("the healthcheck's key list offers %d keys, want exactly the 5 the struct has: %v", len(healthKeys), healthKeys)
+	}
+}
+
+// keysOffered reads the comma-separated key list a message prints between two
+// markers. Parsed rather than pattern-matched so that the assertions in the test
+// above are about keys, not about letters that happen to appear in them.
+func keysOffered(t *testing.T, message, after, before string) []string {
+	t.Helper()
+	_, tail, found := strings.Cut(message, after)
+	if !found {
+		t.Fatalf("err = %q, want it to contain %q", message, after)
+	}
+	listed, _, found := strings.Cut(tail, before)
+	if !found {
+		t.Fatalf("err = %q, want the list after %q to be closed by %q", message, after, before)
+	}
+	return strings.Split(listed, ", ")
+}
+
+// Read at one typo and at three, because the message is built by counting and
+// every count-dependent message is wrong at one count or the other.
+//
+// This test exists because the message WAS wrong at both. It read "caf would
+// have dropped 1 it" — a counted pronoun, which is a sentence about nothing —
+// and then, once that was fixed by routing the pronoun through a format string,
+// it read "caf would have dropped them%!(EXTRA int=3)". Nothing caught either
+// one: the other assertions here look for substrings, and both defects are in
+// the parts of the sentence around the substrings. So the whole message is
+// matched, at both counts, against text written out in full.
+func TestTheCatalogErrorReadsAsASentenceAtEveryCount(t *testing.T) {
+	tests := []struct {
+		name     string
+		document string
+		want     []string
+		notWant  []string
+	}{
+		{
+			name:     "one typo",
+			document: `{"identity": {"name": "identity", "imag": "x"}}`,
+			want: []string{
+				"1 key no entry has:",
+				"caf would have dropped it without saying so.",
+			},
+			notWant: []string{"1 it", "%!", "keys"},
+		},
+		{
+			name:     "three typos",
+			document: `{"identity": {"name": "identity", "imag": "x", "prot": 1, "volums": []}}`,
+			want: []string{
+				"3 keys no entry has:",
+				"caf would have dropped them without saying so.",
+			},
+			notWant: []string{"1 key", "%!", "3 them"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ReadCatalog(strings.NewReader(tt.document))
+			if err == nil {
+				t.Fatalf("ReadCatalog(%q) = nil error, want a failure", tt.document)
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("err = %q, want it to read %q", err, want)
+				}
+			}
+			for _, notWant := range tt.notWant {
+				if strings.Contains(err.Error(), notWant) {
+					t.Errorf("err = %q, want it NOT to contain %q — a message that is wrong about its own count is worse than a terse one", err, notWant)
+				}
+			}
+		})
 	}
 }

@@ -147,6 +147,39 @@ All notable changes to caf are recorded here. The format follows
 
 ### Fixed
 
+- **A misspelled key in a service catalog was dropped without a word, and the
+  developer was later told the catalog was missing something it plainly
+  contained.** `encoding/json` discards a key it does not recognise, so a
+  catalog whose only image was spelled `imag` was accepted, the entry came back
+  with no image, and `caf dev` failed three layers down with *"the local
+  registry names no image for identity"* — a claim about the catalog's
+  contents, sent to somebody holding a file that has an image in it.
+
+  A catalog is the one input caf parses that a person writes by hand, and the
+  only one where a mistake is a human's typing met by a machine's silence. It
+  is now refused, naming the service that holds the key, the key itself, and the
+  keys that would have been right:
+
+  > `1 key no entry has: "imag" in the entry for identity; caf would have
+  > dropped it without saying so. An entry takes name, image, command, port,
+  > publish, environment, volumes, healthcheck, dependencies; …`
+
+  Every typo in the document is reported at once, because they come from one
+  mistake and fixing them a run at a time is a run per typo. The list of valid
+  keys is read off `Entry` by reflection rather than written out beside it: a
+  second copy of the shape is the same drift this fixes, one layer down, and it
+  would leave the error telling people to correct a key that is already correct.
+  Keys prefixed `x-` are dropped on purpose — kamal's spelling of the same
+  escape hatch, and what makes refusing the rest safe.
+
+  It does this itself rather than calling `json.Decoder.DisallowUnknownFields`,
+  for two reasons, and both were found by using it. Its complaint is
+  `json: unknown field "imag"` — no service, no alternatives, so the reader
+  greps. And its signature is not the same in every Go this repository builds
+  under: it returns the decoder in 1.25, the version `mise.toml` pins, and
+  returns nothing in 1.26, so each spelling fails on one of them. Reading the
+  shape off the struct is the same answer on both.
+
 - **The suite floor, which the merge made wrong in the same commit that
   introduced it.** caf-07 branched from caf-06, added four tests, and set
   `minimum: 432` from the 435 its own tree declared. caf-09 then landed on

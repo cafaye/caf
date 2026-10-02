@@ -185,7 +185,15 @@ gate:
       # because caf-22's three live tests are the same kind of env-gated test
       # caf-21's two were — they skip on `CAF_LIVE_KAMAL` — and a new skip is a new
       # tier, so it is named at `expectedSkips` rather than absorbed here.
-      minimum: 589
+      #
+      # caf-29 added 8, all in `internal/dev`, and moved this floor to 597. The
+      # arithmetic is unchanged and so is the reason it moved: 605 declared, 8
+      # skips, so 597 run. The skip count did NOT move, which is the part worth
+      # stating — none of these seven is env-gated, so a new test did not arrive
+      # as a new tier, and `expectedSkips` stays at 8. A commit that added a test
+      # which skipped would have had to move that number too, and this comment is
+      # where the two would otherwise drift apart silently.
+      minimum: 597
     - id: subtests
       match: '^caf: [0-9]+ packages, [0-9]+ top-level passes, ([0-9]+) subtest passes, 0 failures, [0-9]+ skips$'
       # 537, measured, and it is a different detector from the one above.
@@ -205,7 +213,16 @@ gate:
       # step tables are all rows rather than sequences for this reason, and every
       # one of them is a refusal or a decision somebody will one day have to read
       # the name of.
-      minimum: 652
+      #
+      # 654, which is 652 plus the 2 subtests caf-29's catalog-message table
+      # added. This floor is the one that noticed: `TestTheCatalogErrorReadsAs-
+      # ASentenceAtEveryCount` is one top-level test with a row per count, so
+      # the suite floor above could not tell it from a single new test, and
+      # would have been satisfied by the suite floor alone. The two counts are
+      # rows because the message was wrong at BOTH of them — "dropped 1 it", and
+      # then "dropped them%!(EXTRA int=3)" — and a defect that only appears at
+      # one value of a parameter is a defect a single-case test cannot see.
+      minimum: 654
     #
     # THE ONE WITH NO FLOOR, and the schema sanctions that: a `minimum` is
     # omitted "for a proof that reports nothing countable (a step that must

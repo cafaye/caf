@@ -147,6 +147,57 @@ All notable changes to caf are recorded here. The format follows
 
 ### Fixed
 
+- **Any caf command that failed while running an external program exited
+  non-zero and printed nothing at all.** This is the defect this binary exists
+  to prevent, and it was in `Run`.
+
+  `exitCoder` — the interface behind `caf env up` passing a child suite's own
+  status through — was declared with an **exported** `ExitCode() int`. That is
+  also the method on `*os/exec.ExitError`, which is what every wrapped
+  subprocess produces. So `errors.As(err, &coded)` matched the `*exec.ExitError`
+  buried inside any error from any command that shells out, and `Run` took the
+  pass-through branch: return the child's code, print nothing.
+
+  Measured, on `caf dev` against a project whose image build fails:
+
+  ```
+  $ caf dev --registry caf.dev.json -wait 20s
+  starting 3 services in cafbreak-dev
+
+  stopping cafbreak-dev
+  cafbreak-dev stopped
+  $ echo $?
+  1
+  ```
+
+  stderr empty. The Dockerfile's line number, `command not found`, `exit code
+  127` — all of it was built by `ComposeRuntime.exec`, wrapped twice, and
+  discarded. `caf dev`, `caf env`, `caf reclaim` and every future command that
+  runs a binary inherited it, and each reports failure the one way that is
+  indistinguishable from success.
+
+  The method is now `cafExitCode() int`, **unexported**. An unexported method
+  cannot be satisfied by a type in another package, so the only thing that can
+  ever match `exitCoder` is caf's own `childStatus` — which is what the
+  pass-through was for in the first place. `caf env up` still passes a child's
+  status through, and a test says so.
+
+  The test that could have caught this did not, and why is worth writing down:
+  `TestDevReportsARuntimeFailure` stubs the runtime with `errors.New(...)`, and
+  a plain error cannot satisfy an interface with a method on it, so it passed
+  against the broken code. The new test runs a real `sh -c 'exit 127'` so the
+  error under test is the type that actually appears in production — and it
+  asserts that such an error does **not** match `exitCoder`, as a property of
+  the error rather than a call to the method, so that restoring the defect
+  makes it fail instead of fail to compile.
+
+  After:
+
+  ```
+  caf: caf dev: docker compose up (project cafbreak-dev): exit status 1: …
+      RUN this-command-does-not-exist … not found … exit code: 127
+  ```
+
 - **A misspelled key in a service catalog was dropped without a word, and the
   developer was later told the catalog was missing something it plainly
   contained.** `encoding/json` discards a key it does not recognise, so a

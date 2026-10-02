@@ -39,7 +39,7 @@ var errReported = errors.New("reported")
 // than a command that passes one through.
 type exitCoder interface {
 	error
-	ExitCode() int
+	cafExitCode() int
 }
 
 // Options is one CLI invocation. main fills it from the process; tests fill it
@@ -90,7 +90,7 @@ func Run(opts Options) int {
 	// is reading once.
 	var coded exitCoder
 	if errors.As(err, &coded) {
-		return coded.ExitCode()
+		return coded.cafExitCode()
 	}
 	// The command already printed its own report; the exit code is all that is
 	// left to say, and stderr stays empty so the report is not duplicated.

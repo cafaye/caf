@@ -464,7 +464,7 @@ func (c *childStatus) Unwrap() error { return c.err }
 // ExitCode is the child's status, verbatim. A suite that fails 3 exits 3, and a
 // CI job that reported 1 for it would have thrown away the one piece of
 // information the suite chose to give.
-func (c *childStatus) ExitCode() int {
+func (c *childStatus) cafExitCode() int {
 	if c.Code == 0 {
 		// A child that was signalled has no status of its own; `sh -c` reports
 		// 128+signal, but a process killed outright does not, and reporting 0 for

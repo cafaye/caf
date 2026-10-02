@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -849,6 +851,83 @@ func TestDevReportsARuntimeFailure(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "no such image") {
 		t.Errorf("err = %v, want the runtime's own words in it", err)
+	}
+}
+
+// The test above cannot have caught the defect this one is about, and the
+// reason is worth writing down so the next person does not "simplify" it away.
+//
+// `exitCoder` was declared with an EXPORTED `ExitCode() int` — which is also the
+// method on `*os/exec.ExitError`. Every real runtime error wraps one, so
+// `errors.As` matched it, `Run` took the pass-through branch meant for
+// `caf env up`'s child, and the command exited non-zero having printed nothing
+// at all. `errors.New("no such image: ...")` cannot satisfy that interface, so
+// the test above passed against the broken code and the defect shipped.
+//
+// A real subprocess is run here so the error under test is the type that
+// actually appears in production.
+func TestDevReportsASubprocessFailureTheRouterWouldSwallow(t *testing.T) {
+	// Really fail a command, so what is under test is a genuine
+	// *exec.ExitError rather than a type declared in this package.
+	_, runErr := exec.Command("sh", "-c", "exit 127").CombinedOutput()
+	if runErr == nil {
+		t.Fatal("sh exited 0; this test needs a command that fails")
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(runErr, &exitErr) {
+		t.Fatalf("err = %T, want an *exec.ExitError — that is the type the real runtime wraps", runErr)
+	}
+
+	dir := buildableProject(t)
+	runtime := &recordingRuntime{
+		upErr: fmt.Errorf("docker compose up (project stack): %w", runErr),
+	}
+	c := newDevCommand(devDeps{runtime: runtime, registry: emptyRegistry})
+	var out bytes.Buffer
+	env := newTestEnv()
+	env.Stdout = &out
+
+	err := c.Execute(env, []string{dir})
+
+	// The exit code was correct before the fix. Silence and success are
+	// indistinguishable from an exit status, so the message is the assertion.
+	if err == nil {
+		t.Fatal("err = nil, want the runtime's failure")
+	}
+	if !strings.Contains(err.Error(), "exit status 127") {
+		t.Errorf("err = %v, want the subprocess's own status in it", err)
+	}
+
+	// And the router's mapping, which is where the error was lost: with the
+	// interface matching on an exported `ExitCode() int` this succeeds, and caf
+	// exits with the child's code having printed nothing.
+	//
+	// Asserted as a property of the error rather than by calling the method, so
+	// that restoring the defect makes this FAIL rather than fail to compile. A
+	// test that cannot build against the code it is meant to catch has not
+	// demonstrated anything.
+	var coded exitCoder
+	if errors.As(err, &coded) {
+		t.Error("a wrapped *exec.ExitError satisfied exitCoder, so Run would take the " +
+			"pass-through branch and print nothing; only caf's own childStatus may match it")
+	}
+}
+
+// caf's own child status still passes through, which is the half of the
+// pass-through branch that is supposed to work. The fix above narrows what can
+// match; this is what is left matching, and losing it would be a different bug.
+//
+// Stated as a property of the type rather than as a call to the method, so it
+// holds whatever the method is named — see the test above for why.
+func TestAChildStatusStillPassesThrough(t *testing.T) {
+	child := &childStatus{Code: 3, err: errors.New("exit status 3")}
+
+	var coded exitCoder
+	if !errors.As(error(child), &coded) {
+		t.Fatal("childStatus no longer satisfies exitCoder: `caf env up` lost its pass-through")
+	}
+	if child.Code != 3 {
+		t.Errorf("child code = %d, want 3", child.Code)
 	}
 }
 

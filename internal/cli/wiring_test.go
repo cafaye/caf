@@ -265,11 +265,11 @@ func TestTheInvocationGrammar(t *testing.T) {
 func TestASignalledChildDoesNotBecomeSuccess(t *testing.T) {
 	crashed := &childStatus{Code: 0, err: errors.New("signal: killed")}
 
-	if got := crashed.ExitCode(); got != exitFailure {
+	if got := crashed.cafExitCode(); got != exitFailure {
 		t.Errorf("a child with no status exited %d, want %d", got, exitFailure)
 	}
 	real := &childStatus{Code: 3, err: errors.New("exit status 3")}
-	if got := real.ExitCode(); got != 3 {
+	if got := real.cafExitCode(); got != 3 {
 		t.Errorf("a child that exited 3 exited %d, want 3: its status is its own", got)
 	}
 	if !strings.Contains(crashed.Error(), "killed") {

@@ -200,7 +200,17 @@ gate:
       # as a new tier, and `expectedSkips` stays at 8. A commit that added a test
       # which skipped would have had to move that number too, and this comment is
       # where the two would otherwise drift apart silently.
-      minimum: 603
+      # caf-33 added 2, both in `internal/cli`, and moved this floor to 605: 613
+      # declared, 8 skips, so 605 run. Neither is env-gated, so `expectedSkips`
+      # stays at 8 — same reason as caf-30's seven.
+      #
+      # The two are `TestDevReportsASubprocessFailureTheRouterWouldSwallow` and
+      # `TestAChildStatusStillPassesThrough`, and they are a pair on purpose:
+      # one proves an `*exec.ExitError` must NOT match `exitCoder`, the other
+      # proves caf's own `childStatus` still does. Fixing the first by deleting
+      # the pass-through branch would sail past both unless the second were
+      # there, which is why `caf env up`'s status is a floor and not a detail.
+      minimum: 605
     - id: subtests
       match: '^caf: [0-9]+ packages, [0-9]+ top-level passes, ([0-9]+) subtest passes, 0 failures, [0-9]+ skips$'
       # 537, measured, and it is a different detector from the one above.

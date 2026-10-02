@@ -106,7 +106,8 @@ manifests rather than a diff of two runs.
 Without -force an existing file is refused and nothing is written. That is the
 whole point of the flag: an overwrite is a change to a file a person may have
 edited, and a generator that silently replaces one is a generator nobody runs
-twice.`
+twice.
+`
 
 // genOptions is the parsed flag state for `caf gen telemetry`.
 type genOptions struct {

@@ -1026,11 +1026,61 @@ import (
 func TestNoAllowlistedAttributeNameNamesContent(t *testing.T) {
 	for _, signal := range Signals() {
 		t.Run(signal, func(t *testing.T) {
-			for _, name := range Allowed(signal) {
+			// The ALLOWLIST, not Allowed(). Walking the order list instead is the
+			// bug this comment is here about: an attribute added to the map and not
+			// to the order list is invisible to a canary that reads the order
+			// list, so muse.prompt would have been added on a signal with the
+			// guard looking on. It was caught by adding muse.prompt to the traces
+			// allowlist and watching this test pass, which is the only way it
+			// could have been caught.
+			//
+			// Map order is random, and that is fine here: every failure names its
+			// own signal and its own attribute, so the order failures arrive in
+			// carries no information anybody needs.
+			for name := range allowlists[signal] {
 				if word, found := NamesContent(name); found {
 					t.Errorf("%s carries %q on the %s signal, and core's redaction boundary refuses an "+
 						"allowlisted name containing %q. The name has to be a fact about how a call was served",
 						name, word, signal, word)
+				}
+			}
+		})
+	}
+}
+
+// The canary above reads the allowlist map and the public Allowed() reads the
+// order list, so the two have to be the same set or one of them describes
+// something the other does not contain.
+//
+// This is the invariant that makes the canary trustworthy, and it is asserted on
+// its own rather than left as a comment because the failure it catches is a test
+// that PASSES. An attribute in the map and not in the order list is invisible to
+// anything reading Allowed(); an attribute in the order list and not in the map is
+// a name Lookup refuses, so Allowed() advertises a name the setup will not accept.
+// Neither is caught by the canary alone, which is exactly why the canary could
+// pass while carrying a name that names content.
+func TestTheAllowlistAndItsOrderListAreTheSameSet(t *testing.T) {
+	for _, signal := range Signals() {
+		t.Run(signal, func(t *testing.T) {
+			listed := allowlists[signal]
+			ordered := allowlistOrder[signal]
+			if len(listed) == 0 {
+				t.Fatal("the allowlist is empty")
+			}
+			if len(listed) != len(ordered) {
+				t.Errorf("%s has %d allowlisted attribute(s) and %d ordered name(s), so one of the two is "+
+					"describing something the other does not contain", signal, len(listed), len(ordered))
+			}
+			for name := range listed {
+				if !contains(ordered, name) {
+					t.Errorf("%q is allowlisted on %s but not in the order list, so Allowed() does not "+
+						"report it and anything reading Allowed() cannot see it", name, signal)
+				}
+			}
+			for _, name := range ordered {
+				if _, found := listed[name]; !found {
+					t.Errorf("%q is in %s's order list and not in its allowlist, so Allowed() advertises a "+
+						"name Lookup refuses", name, signal)
 				}
 			}
 		})

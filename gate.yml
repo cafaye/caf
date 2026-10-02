@@ -294,7 +294,33 @@ gate:
       # and now run. `expectedSkips` stays at 8 for the same reason every packet
       # since caf-29 gives: none of the eleven is env-gated, so no new test
       # arrived as a new tier.
-      minimum: 687
+      #
+      # 688, which is 687 plus ONE more top-level test, and the one is worth a
+      # paragraph because it came out of a test that was passing.
+      #
+      # `TestNoAllowlistedAttributeNameNamesContent` is the canary: it walks the
+      # allowlist and fails if any name contains a word core's redaction boundary
+      # refuses — prompt, completion, message, content, text, body, header, input,
+      # output, arguments, instructions, transcript, query. It is the barrier
+      # behind the collector, and it existed to stop the realistic leak, which is
+      # a well-meaning `+"`muse.prompt`"+` added six months from now by somebody
+      # debugging a routing decision.
+      #
+      # It was walking `allowlistOrder` rather than the allowlist map. The two are
+      # separate declarations kept in step by nothing, and an attribute added to
+      # the map alone is invisible to anything reading the order list. So `muse.prompt`
+      # was added to the traces allowlist and the canary passed — the guard
+      # looking on, at a name it could not see. It was caught by injecting exactly
+      # that attribute and watching the test stay green, which is the only way a
+      # test that passes can be caught.
+      #
+      # The fix is a second assertion, `TestTheAllowlistAndItsOrderListAreTheSameSet`,
+      # because "the canary reads the right map" and "the canary covers every name"
+      # are different claims and only the second one is what a reader needs. The
+      # first version fixed the canary and left the invariant unasserted, which
+      # would have let the same gap open again in the other direction: an order-list
+      # entry with no allowlist entry behind it advertises a name `Lookup` refuses.
+      minimum: 688
     - id: subtests
       match: '^caf: [0-9]+ packages, [0-9]+ top-level passes, ([0-9]+) subtest passes, 0 failures, [0-9]+ skips$'
       # 537, measured, and it is a different detector from the one above.
@@ -359,7 +385,13 @@ gate:
       # it tests — which is the argument for generating the tests and not just the
       # setup, and the reason this floor moved further than the suite floor did.
       # The measurement is 862 and the floor is one lower, for the reason above.
-      minimum: 861
+      #
+      # RE-MEASURED AT 865 after the canary fix above, and again set one lower for
+      # the same reason. The three rows are the three signals inside
+      # `TestTheAllowlistAndItsOrderListAreTheSameSet`, one row per signal rather
+      # than three asserts — which is why this floor moved by three and the suite
+      # floor by one for the same finding.
+      minimum: 864
     #
     # THE ONE WITH NO FLOOR, and the schema sanctions that: a `minimum` is
     # omitted "for a proof that reports nothing countable (a step that must

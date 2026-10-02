@@ -15,9 +15,11 @@ shared CI and lint configuration comes from `cafaye/kit` — neither lives here.
 ```
 cmd/caf/main.go     thin entrypoint: build a cli.Options, exit with its code
 internal/cli/       router, registry, one file per subcommand
-internal/contract/  the core contract: manifests, the vendored schema, versions
+internal/contract/  the core contract: manifests, the vendored schemas, versions
 internal/backup/    caf backup: the cross-file contract, the plan, the cycle
 internal/dev/       the local stack: the planner, the renderer, two seams
+internal/gen/       caf gen: the pure generator, and the drift gate that keeps it honest
+internal/telemetry/ GENERATED, and compiled: caf's own copy of `caf gen telemetry`'s output
 internal/mcp/       the MCP server: transports, the served table, the SDK seam
 internal/ledger/    the reclamation ledger: what caf created, so cleanup is not memory
 internal/ports/     the port block, the reservation that holds a port, the prober
@@ -69,6 +71,54 @@ contract needs so that `init`, `gen` and `deploy` do not each grow their own:
 - `conventions.go` — the rules the schema cannot state.
 - `lint.go` — the walk, one finding per manifest.
 - `version.go` — the constraint grammar and the resolver.
+- `telemetry.go` — the six vendored telemetry schemas, and the facts `caf gen`
+  reads out of them. This is the package's second job and it is the mirror of the
+  first: `schema.go` validates a document against core's schema, and
+  `telemetry.go` READS core's schema so a generator can emit what core wrote
+  rather than what somebody transcribed. Both are the same argument — a pinned
+  copy beats a fetch — applied in opposite directions.
+
+`internal/gen` is `caf gen`, split by what it is for, and it holds one rule that
+the rest of this file leans on:
+
+- `doc.go` — what the package is, the one target, and the three things it
+  deliberately does not emit with the reasons. Those reasons are the package.
+- `telemetry.go` — the pure function, and the two decisions that are judgement
+  calls rather than derivations: the endpoint variable's derivation from a
+  kebab-case name, and the refusal when it cannot be made legal.
+- `render.go` — the hand-written renderers, and the `writer` with its two
+  methods that makes a `%` in generated code impossible to mistake for a
+  substitution in the generator.
+
+**A generated artifact is written, printed, and compiled — and the compilation
+is the rule this packet added.** `caf gen telemetry` writes three files; two of
+them are Go. caf runs its own generator on its own `cafaye.yml`, so
+`internal/telemetry/` is a committed copy of generated Go that `go build ./...`,
+`go vet ./...`, `gofmt -l .` and `go test ./...` all reach, and
+`telemetry/otel-endpoint.json` is validated against core's own vendored schema
+before it is ever written.
+
+The first arrangement was the conventional one and it was wrong: the goldens sat
+under `internal/gen/testdata/`, which the go toolchain excludes from every
+package, so the generated Go did not compile and its twelve-test suite never ran —
+and `internal/ci`'s walker counted those twelve tests anyway, so `gate.yml`'s
+suite floor was twelve high and the ratchet reported twenty-one skips where
+`expectedSkips` says eight. Twenty-one is a number nobody can account for, which
+is the ratchet doing its job.
+
+So there is one copy, in the tree, compiled, and `internal/gen`'s drift gate
+compares the generator's output against it byte for byte. A generator bug that
+emits Go which does not compile is a red gate rather than a file somebody finds
+out about when they run it. **A generated file nothing compiles is a
+demonstration that rots**, and this repository already says that about the live
+tier for the same reason.
+
+`internal/telemetry` is therefore not caf's telemetry: it is wired to nothing, it
+imports no OTel SDK, and `caf` exports no signal. It exists so that the generator
+has a first consumer whose compiler and test runner are the ordinary gate, and it
+is the first thing to delete when caf has a real OTel setup of its own — at which
+point `caf gen telemetry` becomes a command other services run rather than a
+command caf runs on itself.
 
 `internal/backup` is `caf backup`, split the same way, and it exists so that a
 second command that needs to know what a backup is does not grow its own:
@@ -249,6 +299,26 @@ inspect is a command nobody can debug, and a document that only lives inside a
 tool is a document nobody can diff. The file is byte-identical between runs of
 one manifest, so the diff between two of them is a diff between two manifests.
 
+`caf gen` obeys it and adds two clauses, because it generates code rather than a
+document. **It is generated into memory and refused before anything is written**,
+so a run that hits an existing file leaves the tree untouched; a generator that
+wrote as it went would leave a half-updated tree and the next run would refuse the
+half it had already done. And **a generated file that is code is compiled by this
+gate**, which is why caf runs its own generator on its own manifest: `internal/telemetry/`
+is generated Go that `go build`, `go vet`, `gofmt -l` and `go test` all reach. See
+the Layout section, which says why the conventional place to put a generated
+golden — `testdata/` — is the wrong one, and what it cost to find out.
+
+**A generated file must be gofmt-canonical, and proving that is arithmetic.** gofmt
+aligns the values of *consecutive single-line* fields in a composite literal and
+ends the run at the first multi-line one, so the padding a generated `Attribute`
+literal needs depends on which fields that one attribute has. `internal/gen`
+computes exactly that, per entry, because a generated file that fails `gofmt -l` in
+the service that adopted it fails the one lint every Go repository in this fleet
+runs, and that service has no way to tell the generated file apart from its own.
+The three numbers it was wrong by before it was right are recorded beside the
+function: `widest len(key)`, `widest len(key)+1`, and `widest len(key)+2`.
+
 **Write the entry before the resource, and never the other way round.** This is
 `internal/ledger`'s one ordering rule and it is not negotiable. A caf that dies
 between the record and the resource leaves a ledger entry naming something that
@@ -322,6 +392,24 @@ again, to read `config/kamal-backup.yml` and the accessory block out of the docu
 parser at all, and this one reports a line and a column, which is the difference
 between "your backup configuration is wrong" and a sentence naming what is wrong.
 
+`internal/gen` has none, and that is a decision with a cost rather than a
+default. It imports `regexp` and `encoding/json` and nothing else, which is why
+`caf gen telemetry` can emit an OTel setup that is itself stdlib-only: the
+generator cannot write a file that pulls a dependency into a service, because the
+generator has no way to know which version that service wants. The cost is that
+the emitted setup is the *contract* — the allowlists, the prohibition, the resource
+attributes, the endpoint variable, the no-op path — and not the SDK wiring, which
+the emitted file's header names as `go get` lines instead. That is the honest
+split: what core specifies is derived, and what a service's dependency graph
+decides is left to the service.
+
+`internal/telemetry` — the generated copy — also has none, for the same reason and
+by the same mechanism: a generated file that imported an SDK would put a version
+pin in a file caf generates, which is a decision caf is not making on a service's
+behalf. It is also worth saying that a generated file with no `go.mod` change
+cannot break a service's build with a dependency resolution failure, which is the
+failure mode that makes generated code untrustworthy.
+
 `internal/mcp` has one: `github.com/modelcontextprotocol/go-sdk`, the official
 Go SDK for the Model Context Protocol. The standard library has no JSON-RPC, no
 protocol-version negotiation and no tool-call semantics, and MCP's wire format
@@ -336,6 +424,27 @@ a byte-identical copy of core's manifest schema, pinned by sha256 in
 directory's README. Copy it over and update the pin; never edit it in place and
 never download it at runtime. A linter that fetches the contract it validates
 against gives a different answer on a different day.
+
+`internal/contract/schemas/telemetry/` holds six more copies from the same core
+commit, pinned one hash per file in `telemetryPins` and checked by
+`TestEveryVendoredTelemetrySchemaIsPinned`. They are here for the opposite reason
+to the manifest schema, and the difference is worth being precise about:
+`caf contract lint` validates a document against core's schema, while
+`caf gen telemetry` READS core's schema to know what to emit. So a fact in those
+six files — an allowlist, the fourteen prohibited measurement attributes, the ten
+resource attributes, the thirteen `error.type` values, the span-name grammar, the
+`const`s that pin the no-op path — reaches caf's output because caf read it, and a
+core release that moves one of them changes what caf emits with nobody editing caf.
+That is the entire mechanism behind a generated artifact that does not drift, and
+it is why there is no allowlist transcribed anywhere in this tree.
+
+Four of core's ten telemetry schemas are deliberately absent, and which four is a
+decision rather than an oversight: `probes.schema.json` needs a service's runtime
+dependency list and no field in `cafaye.yml` records one — and a `readyz` that
+checked nothing is the failure that schema exists to prevent — and the three `slo*`
+schemas are about budgets a person decides per service. Emitting either would be
+emitting a guess, and a guess in a file something else is written against is the
+kind that gets copied. The reasoning is in `schemas/README.md`.
 
 **Comments say why.** Explain the decision and the constraint, not the
 mechanism. A comment restating the line below it is noise.
@@ -478,6 +587,23 @@ cold build. It earns that, because it is the only thing in the repository that
 would have noticed `caf` did not compile for Windows at all — a gap that had been
 there since `doctor`'s memory probe was written for two platforms.
 
+**A fourth thing `internal/ci` holds is the drift gate for generated code**, and it
+is worth being explicit about where it lives, because the obvious answer is wrong.
+`TestTheGeneratedTelemetryHasNotDrifted` in `internal/gen/drift_test.go` regenerates
+caf's own telemetry files from the vendored core schemas and compares them byte for
+byte. It is an ordinary `go test`, so `bin/prime` runs it and
+`.github/workflows/ci.yml` runs `bin/prime` — which is the only place a gate belongs
+in this repository, and the same shape `gate.yml` already declares for its three
+floors. There is no separate script, no separate CI step, and no directory nobody
+runs, because a drift gate in any of those is a demonstration that rots.
+
+Its counterpart is `notASourceTree` in `internal/ci/prime_test.go`, and that exists
+because of a measured failure: `internal/gen` first kept its goldens under
+`testdata/`, the go toolchain excludes that directory from every package, and the
+walker that counts the suite counted twelve tests `go test` never runs — so
+`gate.yml`'s floor was twelve high and the ratchet named twenty-one skips where
+`expectedSkips` says eight. If you add a directory that holds Go files `go test`
+does not run, add it there in the same commit.
 
 
 ## Adding a subcommand
@@ -488,13 +614,24 @@ there since `doctor`'s memory probe was written for two platforms.
 3. Add it to `stubCommands` in `internal/cli/stub_test.go` with the argument
    count it expects.
 4. Add the row to the README command table.
-5. `bin/prime`, `gofmt -l .`, `go vet ./...` — and if the change added a test,
-   raise the floor in `gate.yml` in the same commit, or step 5 will tell you so.
+5. Add the package to the Layout section above if it is a new one, and count it in
+   the dependency paragraph — "There are two packages with dependencies" is a claim
+   about the tree, and a new package makes it wrong.
+6. `bin/prime`, `gofmt -l .`, `go vet ./...` — and if the change added a test,
+   raise the floor in `gate.yml` in the same commit, or step 6 will tell you so.
 
 A subcommand that groups verbs (`caf contract lint`) does all of that and one
 more: each verb is a `Command` of its own, named with its full invocation so
 its messages read as the words the user typed, and the parent dispatches to it
-from `Run` instead of registering it in `Commands()`.
+from `Run` instead of registering it in `Commands()`. Its row in
+`stub_test.go` moves from `stubCommands` to `workingCommands` — the parent, not the
+verbs — which is why `gen` is in that list and `gen telemetry` is not.
+
+A subcommand that generates code has one more obligation: **its output has to be
+compiled by this gate.** Write it into the tree, run it on this repository's own
+manifest, and commit the result. `caf gen telemetry` does, and the reason is in
+the Layout section — the first arrangement put the goldens under `testdata/`,
+which nothing compiles, and the gate's own test-count floor caught it.
 
 ## Changing the contract
 
